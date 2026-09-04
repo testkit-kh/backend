@@ -85,7 +85,7 @@ jobs:
         uses: peter-evans/repository-dispatch@v3
         with:
           token: ${{ secrets.DEPLOY_DISPATCH_TOKEN }}
-          repository: testkit-kosmohackaton/deploy
+          repository: testkit-kh/deploy
           event-type: image-published
           client-payload: |-
             {"repo": "${{ github.repository }}", "sha": "${{ github.sha }}"}
