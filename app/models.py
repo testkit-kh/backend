@@ -7,6 +7,8 @@ Tables
 - volunteers     — 1-to-1 extension for role='volunteer'
 - organizations  — ООПТ / nature-reserve organizations
 - staff          — 1-to-1 extension for role='staff', FK → organizations
+- hypotheses     — volunteer-submitted ecological observations
+- events         — field events spawned from approved hypotheses
 """
 
 from __future__ import annotations
@@ -15,16 +17,17 @@ import enum
 import uuid
 from datetime import datetime, timezone
 
+from geoalchemy2 import Geometry
 from sqlalchemy import (
     Boolean,
     DateTime,
     Enum as SAEnum,
+    Float,
     ForeignKey,
     String,
     Text,
     Uuid,
 )
-from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
@@ -44,7 +47,23 @@ class OrgVerificationStatus(str, enum.Enum):
     pending = "pending"
     verified = "verified"
     failed = "failed"
-    manual_review = "manual_review"  # set when external API is unreachable
+    manual_review = "manual_review"
+
+
+class HypothesisStatus(str, enum.Enum):
+    """Lifecycle of a volunteer-submitted hypothesis."""
+    pending = "pending"
+    approved = "approved"
+    rejected = "rejected"
+    drone_requested = "drone_requested"
+
+
+class EventStatus(str, enum.Enum):
+    """Lifecycle of a field event."""
+    planned = "planned"
+    in_progress = "in_progress"
+    completed = "completed"
+    cancelled = "cancelled"
 
 
 # ---------------------------------------------------------------------------
@@ -96,6 +115,9 @@ class Volunteer(Base):
     )
     is_trained: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     is_over_14: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    stepik_cert_url: Mapped[str | None] = mapped_column(
+        String(2048), nullable=True, default=None
+    )
 
     user: Mapped[User] = relationship(back_populates="volunteer")
 
@@ -114,10 +136,12 @@ class Organization(Base):
     inn: Mapped[str] = mapped_column(String(12), unique=True, nullable=False, index=True)
     cadastral_number: Mapped[str] = mapped_column(String(64), nullable=True)
 
-    # Territory geometry stored as GeoJSON in JSONB.
-    # Switch to `geoalchemy2.Geometry("POLYGON", srid=4326)` when PostGIS is
-    # enabled — the rest of the code stays the same.
-    territory_geom: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    # Native PostGIS polygon — SRID 4326 (WGS-84, lon/lat).
+    # Requires CREATE EXTENSION postgis; in the database.
+    territory_geom = mapped_column(
+        Geometry(geometry_type="POLYGON", srid=4326, spatial_index=True),
+        nullable=True,
+    )
 
     verification_status: Mapped[OrgVerificationStatus] = mapped_column(
         SAEnum(
@@ -135,6 +159,9 @@ class Organization(Base):
     )
 
     staff_members: Mapped[list[Staff]] = relationship(
+        back_populates="organization", lazy="selectin"
+    )
+    hypotheses: Mapped[list[Hypothesis]] = relationship(
         back_populates="organization", lazy="selectin"
     )
 
@@ -158,3 +185,100 @@ class Staff(Base):
 
     user: Mapped[User] = relationship(back_populates="staff")
     organization: Mapped[Organization] = relationship(back_populates="staff_members")
+
+
+# ---------------------------------------------------------------------------
+# Hypotheses (экологические наблюдения волонтёров)
+# ---------------------------------------------------------------------------
+
+class Hypothesis(Base):
+    __tablename__ = "hypotheses"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, primary_key=True, default=uuid.uuid4
+    )
+    author_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("organizations.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+
+    lat: Mapped[float] = mapped_column(Float, nullable=False)
+    lon: Mapped[float] = mapped_column(Float, nullable=False)
+
+    # Native PostGIS point built from (lon, lat) at insertion time.
+    location = mapped_column(
+        Geometry(geometry_type="POINT", srid=4326, spatial_index=True),
+        nullable=True,
+    )
+
+    description: Mapped[str] = mapped_column(Text, nullable=False)
+    photo_url: Mapped[str | None] = mapped_column(String(2048), nullable=True)
+
+    status: Mapped[HypothesisStatus] = mapped_column(
+        SAEnum(
+            HypothesisStatus,
+            name="hypothesis_status",
+            create_constraint=True,
+        ),
+        default=HypothesisStatus.pending,
+        nullable=False,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        nullable=False,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+        nullable=False,
+    )
+
+    author: Mapped[User] = relationship(foreign_keys=[author_id], lazy="joined")
+    organization: Mapped[Organization | None] = relationship(
+        back_populates="hypotheses", lazy="joined"
+    )
+    event: Mapped[Event | None] = relationship(
+        back_populates="hypothesis", uselist=False, lazy="joined"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Events (мероприятия, создаются при approved-гипотезе)
+# ---------------------------------------------------------------------------
+
+class Event(Base):
+    __tablename__ = "events"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, primary_key=True, default=uuid.uuid4
+    )
+    hypothesis_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("hypotheses.id", ondelete="CASCADE"),
+        unique=True,
+        nullable=False,
+    )
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("organizations.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    title: Mapped[str] = mapped_column(
+        String(512), nullable=False
+    )
+    status: Mapped[EventStatus] = mapped_column(
+        SAEnum(EventStatus, name="event_status", create_constraint=True),
+        default=EventStatus.planned,
+        nullable=False,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        nullable=False,
+    )
+
+    hypothesis: Mapped[Hypothesis] = relationship(back_populates="event")

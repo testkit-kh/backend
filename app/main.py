@@ -10,6 +10,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from app.auth import router as auth_router
+from app.hypotheses import router as hypotheses_router
 from app.database import engine, Base
 
 
@@ -24,11 +25,13 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Eco-Project MVP",
     description="Backend API for the ecological volunteer / ООПТ staff platform.",
-    version="0.1.0",
+    version="0.2.0",
     lifespan=lifespan,
 )
 
 app.include_router(auth_router)
+app.include_router(hypotheses_router)
+
 
 
 @app.get("/", tags=["health"])
