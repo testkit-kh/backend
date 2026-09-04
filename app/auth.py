@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import logging
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import bcrypt
 import jwt
@@ -33,12 +33,12 @@ from app.models import (
     Volunteer,
 )
 from app.schemas import (
+    OrganizationOut,
     OrganizationRegisterRequest,
     StaffProfile,
     TokenResponse,
     VolunteerProfile,
     VolunteerRegisterRequest,
-    OrganizationOut,
 )
 
 logger = logging.getLogger(__name__)
@@ -67,7 +67,7 @@ def verify_password(plain: str, hashed: str) -> bool:
 
 def create_access_token(data: dict) -> str:
     payload = data.copy()
-    expire = datetime.now(timezone.utc) + timedelta(
+    expire = datetime.now(UTC) + timedelta(
         minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES
     )
     payload.update({"exp": expire})

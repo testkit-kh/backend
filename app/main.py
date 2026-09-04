@@ -10,8 +10,8 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from app.auth import router as auth_router
+from app.database import Base, engine
 from app.hypotheses import router as hypotheses_router
-from app.database import engine, Base
 
 
 @asynccontextmanager

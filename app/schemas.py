@@ -11,12 +11,10 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, HttpUrl
 
 from app.models import (
-    EventStatus,
     HypothesisStatus,
     OrgVerificationStatus,
     UserRole,
 )
-
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Auth — requests
