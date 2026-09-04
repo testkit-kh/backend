@@ -80,3 +80,12 @@ jobs:
             ghcr.io/${{ github.repository }}:${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Trigger deploy
+        uses: peter-evans/repository-dispatch@v3
+        with:
+          token: ${{ secrets.DEPLOY_DISPATCH_TOKEN }}
+          repository: testkit-kosmohackaton/deploy
+          event-type: image-published
+          client-payload: |-
+            {"repo": "${{ github.repository }}", "sha": "${{ github.sha }}"}
