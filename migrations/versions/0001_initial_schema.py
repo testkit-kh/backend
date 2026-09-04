@@ -12,6 +12,7 @@ from typing import Sequence
 import geoalchemy2
 import sqlalchemy as sa
 from alembic import op
+from sqlalchemy.dialects import postgresql
 
 revision: str = "0001"
 down_revision: str | None = None
@@ -19,26 +20,36 @@ branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
 
-user_role = sa.Enum("volunteer", "staff", name="user_role")
-org_verification_status = sa.Enum(
-    "pending", "verified", "failed", "manual_review", name="org_verification_status"
+USER_ROLE = ("volunteer", "staff")
+ORG_VERIFICATION_STATUS = ("pending", "verified", "failed", "manual_review")
+HYPOTHESIS_STATUS = ("pending", "approved", "rejected", "drone_requested")
+EVENT_STATUS = ("planned", "in_progress", "completed", "cancelled")
+
+# Типы создаются один раз явно (ниже, в upgrade). В самих create_table они
+# указываются с create_type=False, иначе SQLAlchemy выпустит CREATE TYPE
+# повторно и миграция упадёт на "type already exists".
+user_role = postgresql.ENUM(*USER_ROLE, name="user_role", create_type=False)
+org_verification_status = postgresql.ENUM(
+    *ORG_VERIFICATION_STATUS, name="org_verification_status", create_type=False
 )
-hypothesis_status = sa.Enum(
-    "pending", "approved", "rejected", "drone_requested", name="hypothesis_status"
+hypothesis_status = postgresql.ENUM(
+    *HYPOTHESIS_STATUS, name="hypothesis_status", create_type=False
 )
-event_status = sa.Enum(
-    "planned", "in_progress", "completed", "cancelled", name="event_status"
-)
+event_status = postgresql.ENUM(*EVENT_STATUS, name="event_status", create_type=False)
 
 
 def upgrade() -> None:
     op.execute("CREATE EXTENSION IF NOT EXISTS postgis")
 
     bind = op.get_bind()
-    user_role.create(bind, checkfirst=True)
-    org_verification_status.create(bind, checkfirst=True)
-    hypothesis_status.create(bind, checkfirst=True)
-    event_status.create(bind, checkfirst=True)
+    postgresql.ENUM(*USER_ROLE, name="user_role").create(bind, checkfirst=True)
+    postgresql.ENUM(
+        *ORG_VERIFICATION_STATUS, name="org_verification_status"
+    ).create(bind, checkfirst=True)
+    postgresql.ENUM(*HYPOTHESIS_STATUS, name="hypothesis_status").create(
+        bind, checkfirst=True
+    )
+    postgresql.ENUM(*EVENT_STATUS, name="event_status").create(bind, checkfirst=True)
 
     # ---- users -----------------------------------------------------------
     op.create_table(
@@ -182,7 +193,5 @@ def downgrade() -> None:
     op.drop_table("users")
 
     bind = op.get_bind()
-    event_status.drop(bind, checkfirst=True)
-    hypothesis_status.drop(bind, checkfirst=True)
-    org_verification_status.drop(bind, checkfirst=True)
-    user_role.drop(bind, checkfirst=True)
+    for name in ("event_status", "hypothesis_status", "org_verification_status", "user_role"):
+        postgresql.ENUM(name=name).drop(bind, checkfirst=True)

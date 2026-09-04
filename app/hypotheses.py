@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import logging
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from geoalchemy2.functions import ST_AsGeoJSON, ST_Contains, ST_MakePoint, ST_SetSRID
@@ -297,7 +297,7 @@ async def validate_hypothesis(
     # Time from submission to verdict — the operational KPI. Computed here
     # because `updated_at` is about to be overwritten by this very update.
     time_to_validate = (
-        datetime.now(timezone.utc) - hypothesis.created_at
+        datetime.now(UTC) - hypothesis.created_at
     ).total_seconds()
 
     # Update status

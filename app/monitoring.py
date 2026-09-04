@@ -48,8 +48,17 @@ def _require_staff_org(user: User) -> uuid.UUID:
     return user.staff.organization_id
 
 
-def _site_out(site: MonitoringSite) -> MonitoringSiteOut:
-    surveys = site.surveys or []
+def _site_out(
+    site: MonitoringSite,
+    surveys_count: int = 0,
+    last_surveyed_at=None,
+) -> MonitoringSiteOut:
+    """Счётчики передаются явно, а не берутся из site.surveys.
+
+    Обращение к relationship здесь означало бы ленивую загрузку: у только что
+    созданной площадки она падает в async-контексте (MissingGreenlet), а в
+    списке дала бы запрос на каждую строку.
+    """
     return MonitoringSiteOut(
         id=site.id,
         organization_id=site.organization_id,
@@ -61,8 +70,8 @@ def _site_out(site: MonitoringSite) -> MonitoringSiteOut:
         protocol=site.protocol,
         is_active=site.is_active,
         created_at=site.created_at,
-        surveys_count=len(surveys),
-        last_surveyed_at=surveys[-1].surveyed_at if surveys else None,
+        surveys_count=surveys_count,
+        last_surveyed_at=last_surveyed_at,
     )
 
 
@@ -142,12 +151,23 @@ async def list_sites(
 ):
     organization_id = _require_staff_org(user)
 
-    result = await session.execute(
-        select(MonitoringSite)
+    # Один запрос с агрегатом вместо обхода relationship по каждой площадке.
+    query = (
+        select(
+            MonitoringSite,
+            func.count(SiteSurvey.id).label("surveys_count"),
+            func.max(SiteSurvey.surveyed_at).label("last_surveyed_at"),
+        )
+        .outerjoin(SiteSurvey, SiteSurvey.site_id == MonitoringSite.id)
         .where(MonitoringSite.organization_id == organization_id)
+        .group_by(MonitoringSite.id)
         .order_by(MonitoringSite.code)
     )
-    return [_site_out(site) for site in result.unique().scalars().all()]
+    result = await session.execute(query)
+    return [
+        _site_out(site, surveys_count, last_surveyed_at)
+        for site, surveys_count, last_surveyed_at in result.unique().all()
+    ]
 
 
 # ═══════════════════════════════════════════════════════════════════════════

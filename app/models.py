@@ -360,7 +360,7 @@ class AnalyticsEvent(Base):
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
-        default=lambda: datetime.now(timezone.utc),
+        default=lambda: datetime.now(UTC),
         nullable=False,
     )
 
@@ -412,13 +412,13 @@ class MonitoringSite(Base):
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
-        default=lambda: datetime.now(timezone.utc),
+        default=lambda: datetime.now(UTC),
         nullable=False,
     )
 
     organization: Mapped[Organization] = relationship(lazy="joined")
     surveys: Mapped[list[SiteSurvey]] = relationship(
-        back_populates="site", lazy="selectin", order_by="SiteSurvey.surveyed_at"
+        back_populates="site", order_by="SiteSurvey.surveyed_at"
     )
 
     __table_args__ = (
@@ -474,7 +474,7 @@ class SiteSurvey(Base):
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
-        default=lambda: datetime.now(timezone.utc),
+        default=lambda: datetime.now(UTC),
         nullable=False,
     )
 
