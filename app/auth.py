@@ -22,6 +22,7 @@ from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.analytics import EventType, emit
 from app.config import settings
 from app.database import get_session
 from app.models import (
@@ -201,6 +202,18 @@ async def register_volunteer(
     session.add(volunteer)
     await session.flush()
 
+    await emit(
+        session,
+        EventType.user_registered,
+        user_id=user.id,
+        payload={
+            "role": UserRole.volunteer.value,
+            "source": body.source or "direct",
+            "referred_by": str(body.referred_by) if body.referred_by else None,
+            "is_over_14": body.is_over_14,
+        },
+    )
+
     return VolunteerProfile(
         id=user.id,
         email=user.email,
@@ -286,6 +299,33 @@ async def register_organization(
     )
     session.add(staff)
     await session.flush()
+
+    await emit(
+        session,
+        EventType.oopt_registered,
+        user_id=user.id,
+        payload={
+            "organization_id": str(org.id),
+            "inn": body.inn,
+            "cadastral_number": body.cadastral_number,
+        },
+    )
+    # Recorded separately from the registration itself: the KPI document tracks
+    # the auto_ok / auto_fail_manual_queue split as its own metric.
+    await emit(
+        session,
+        EventType.inn_verification,
+        user_id=user.id,
+        payload={
+            "organization_id": str(org.id),
+            "status": (
+                "auto_ok"
+                if verification_status == OrgVerificationStatus.verified
+                else "auto_fail_manual_queue"
+            ),
+            "verification_status": verification_status.value,
+        },
+    )
 
     return StaffProfile(
         id=user.id,

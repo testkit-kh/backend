@@ -2,6 +2,9 @@ fastapi[standard]==0.115.*
 uvicorn[standard]==0.34.*
 sqlalchemy[asyncio]==2.0.*
 asyncpg==0.31.*
+greenlet==3.*
+alembic==1.14.*
+alembic-utils==0.8.*
 geoalchemy2==0.17.*
 pydantic==2.*
 pydantic-settings==2.*
@@ -9,3 +12,5 @@ email-validator==2.*
 bcrypt==5.*
 PyJWT==2.*
 python-multipart==0.0.*
+httpx==0.28.*
+structlog==25.*
