@@ -1,0 +1,12 @@
+.venv
+.ci-check-venv
+__pycache__
+*.pyc
+.git
+.github
+.idea
+.vscode
+.claude
+tests
+*.md
+.env
