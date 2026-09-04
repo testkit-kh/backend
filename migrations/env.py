@@ -15,11 +15,10 @@ from geoalchemy2 import alembic_helpers
 from sqlalchemy import pool
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
-from app.config import settings
-from app.database import Base
-
 # Importing the models module registers every table on Base.metadata.
 from app import models  # noqa: F401
+from app.config import settings
+from app.database import Base
 
 config = context.config
 config.set_main_option("sqlalchemy.url", settings.DATABASE_URL)
