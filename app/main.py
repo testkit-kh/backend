@@ -31,6 +31,7 @@ from app.organizations import router as organizations_router
 from app.parcels import router as parcels_router
 from app.public import router as public_router
 from app.registry.router import router as registry_router
+from app.satellite.router import router as satellite_router
 from app.scheduler import shutdown_scheduler, start_scheduler
 from app.uploads import router as uploads_router
 from app.users import router as users_router
@@ -87,6 +88,7 @@ app.include_router(users_router)
 app.include_router(volunteers_router)
 app.include_router(uploads_router)
 app.include_router(ml_router)
+app.include_router(satellite_router)
 
 
 @app.get("/", tags=["health"])

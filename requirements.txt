@@ -18,3 +18,7 @@ rosreestr2coord==5.3.*
 APScheduler==3.11.*
 structlog==25.*
 fpdf2==2.*
+pystac-client==0.8.*
+rasterio==1.4.*
+scipy==1.14.*
+shapely==2.*

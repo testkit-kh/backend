@@ -126,6 +126,18 @@ class Settings(BaseSettings):
     #: Инференс на CPU может идти минуты; GPU — единицы секунд.
     ML_TIMEOUT_S: float = 180.0
 
+    # --- Sentinel-2 / STAC (спутниковые снимки) ------------------------------
+    # Публичный каталог Element84 Earth Search: без ключа, без лимита на
+    # разумный интерактивный трафик. Пустой STAC_API_URL или
+    # TITILER_PUBLIC_URL — ручки /api/v1/satellite/* отвечают 503, тайлы
+    # сами тянутся браузером через Caddy и бэкенда не касаются.
+    STAC_API_URL: str = ""
+    STAC_COLLECTION: str = "sentinel-2-l2a"
+    TITILER_PUBLIC_URL: str = ""
+    #: Лимит площади bbox для /satellite/detect: считываем окно COG целиком
+    #: в память (rasterio), поэтому запрос на весь ООПТ отклоняется 422.
+    SATELLITE_DETECT_MAX_AREA_KM2: float = 10.0
+
     @field_validator("CORS_ORIGINS", mode="before")
     @classmethod
     def _split_origins(cls, value: object) -> object:

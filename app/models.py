@@ -147,6 +147,7 @@ class HypothesisSource(str, enum.Enum):
 
     manual = "manual"
     uav_auto = "uav_auto"
+    satellite_auto = "satellite_auto"
 
 
 class EventStatus(str, enum.Enum):
@@ -1324,6 +1325,52 @@ class MlFinding(Base):
 
     __table_args__ = (
         Index("idx_ml_findings_geom", "geom", postgresql_using="gist"),
+    )
+
+
+class SatelliteScene(Base):
+    """Сцена Sentinel-2 из STAC (Element84 Earth Search).
+
+    Храним весь `assets` целиком (имя ассета → https-ссылка на COG в
+    публичном S3 Open Data), чтобы построение тайл-URL и /detect не ходили
+    в STAC повторно — как ml_scans хранит imagery/geojson целиком.
+    """
+
+    __tablename__ = "satellite_scenes"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    stac_id: Mapped[str] = mapped_column(String(128), nullable=False, unique=True)
+    collection: Mapped[str] = mapped_column(String(64), nullable=False)
+    datetime: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, index=True
+    )
+    cloud_cover: Mapped[float | None] = mapped_column(Float, nullable=True)
+    #: [min_lon, min_lat, max_lon, max_lat]
+    bbox: Mapped[list] = mapped_column(JSONB, nullable=False)
+    #: Footprint сцены — для ST_Intersects при поиске ближайшей/по bbox.
+    geom = mapped_column(
+        Geometry(geometry_type="GEOMETRY", srid=4326, spatial_index=True),
+        nullable=True,
+    )
+    #: STAC asset key → https-ссылка на COG, как в Earth Search:
+    #: {"visual": href, "red": href, "green": href, "blue": href, "nir": href, ...}
+    assets: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    thumbnail_url: Mapped[str | None] = mapped_column(String(2048), nullable=True)
+    organization_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("organizations.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
+    )
+    #: Обновляется при повторном upsert той же stac_id (сцена не меняется,
+    #: но так видно, когда мы её в последний раз видели в STAC-поиске).
+    fetched_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(UTC),
+        onupdate=lambda: datetime.now(UTC),
+        nullable=False,
     )
 
 
