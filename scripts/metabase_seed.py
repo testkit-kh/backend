@@ -227,7 +227,7 @@ class Metabase:
         return self._post("/api/card", body)["id"]
 
     # -- дашборды ----------------------------------------------------------
-    def ensure_dashboard(self, name: str, card_ids: list[int], scoped: bool) -> int:
+    def ensure_dashboard(self, name: str, cards: list[Card], card_ids: list[int], scoped: bool) -> int:
         dashboard_id = None
         for existing in self._get("/api/dashboard"):
             if existing["name"] == name:
@@ -250,8 +250,14 @@ class Metabase:
         )
 
         # Раскладка в две колонки: у Metabase сетка 24 единицы в ширину.
+        # Маппинг параметра — по конкретной карточке, а не по дашборду целиком:
+        # в одном дашборде могут соседствовать карточки с {{organization_id}}
+        # и без него (например, антифрод-список общий на всех), и Metabase
+        # отвергает весь embed, если параметр смаплен на карточку, в чьём
+        # запросе такого тега нет ("Unknown parameter :organization_id").
         dashcards = []
-        for index, card_id in enumerate(card_ids):
+        for index, (card, card_id) in enumerate(zip(cards, card_ids)):
+            has_org_param = bool(card.template_tags)
             dashcards.append(
                 {
                     "id": -(index + 1),
@@ -268,7 +274,7 @@ class Metabase:
                                 "target": ["variable", ["template-tag", "organization_id"]],
                             }
                         ]
-                        if scoped
+                        if has_org_param
                         else []
                     ),
                 }
@@ -316,7 +322,7 @@ def main() -> int:
     for name, cards, env_var in DASHBOARDS:
         scoped = any(card.template_tags for card in cards)
         card_ids = [metabase.ensure_card(card, database_id) for card in cards]
-        dashboard_id = metabase.ensure_dashboard(name, card_ids, scoped)
+        dashboard_id = metabase.ensure_dashboard(name, cards, card_ids, scoped)
         print(f"  {name}: дашборд {dashboard_id}, карточек {len(card_ids)}")
         env_lines.append(f"{env_var}={dashboard_id}")
 
