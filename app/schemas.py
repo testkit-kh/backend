@@ -189,29 +189,153 @@ class CleanupEstimateOut(BaseModel):
 
 
 class HypothesisCreateRequest(BaseModel):
-    lat: float = Field(ge=-90.0, le=90.0, description="Latitude (WGS-84)")
-    lon: float = Field(ge=-180.0, le=180.0, description="Longitude (WGS-84)")
-    description: str = Field(min_length=1, max_length=4096)
-    photo_url: str | None = Field(default=None, max_length=2048)
+    """Создание гипотезы.
+
+    Поддерживает два формата ввода геометрии:
+    - Устаревший: lat + lon (обратная совместимость).
+    - Новый: geometry (GeoJSON Feature или Geometry).
+    Если передано geometry — lat/lon извлекаются из centroid'а
+    на сервере; если только lat/lon — geometry не обязателен.
+    """
+
+    # ---- Геометрия (предпочтительный путь) ----
+    geometry: GeoJSONGeometry | None = Field(
+        default=None,
+        description=(
+            "GeoJSON Geometry: Point или Polygon."
+            " При передаче lat/lon можно опустить."
+        ),
+    )
+
+    # ---- Обратная совместимость: lat/lon ----
+    lat: float | None = Field(
+        default=None, ge=-90.0, le=90.0,
+        description="Latitude (WGS-84). Обязателен без geometry.",
+    )
+    lon: float | None = Field(
+        default=None, ge=-180.0, le=180.0,
+        description="Longitude (WGS-84). Обязателен без geometry.",
+    )
+
+    description: str = Field(
+        min_length=1, max_length=4096,
+    )
+    photo_url: str | None = Field(
+        default=None, max_length=2048,
+    )
     trash: TrashDetails = Field(default_factory=TrashDetails)
     monitoring_site_id: uuid.UUID | None = Field(
         default=None,
-        description="Если точка — очередной замер на площадке многолетних наблюдений",
+        description=(
+            "Если точка — очередной замер на площадке"
+            " многолетних наблюдений"
+        ),
     )
+
+    # ---- P0-1: офлайн-идемпотентность ----
+    # UUID, сгенерированный мобильным приложением на устройстве.
+    # Пара (author_id, client_id) уникальна в БД — повторный
+    # POST вернёт 200 и существующую запись, а не дубль.
+    client_id: uuid.UUID | None = Field(
+        default=None,
+        description="Идемпотентный ключ от клиента",
+    )
+    created_at_client: datetime | None = Field(
+        default=None,
+        description=(
+            "Время создания на устройстве."
+            " Для определения offline-режима."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _require_coordinates(self) -> HypothesisCreateRequest:
+        """Нужен хотя бы один источник координат:
+        либо geometry, либо пара lat+lon.
+        """
+        has_geom = self.geometry is not None
+        has_latlon = (
+            self.lat is not None
+            and self.lon is not None
+        )
+        if not has_geom and not has_latlon:
+            raise ValueError(
+                "Передайте geometry (GeoJSON) или"
+                " оба поля lat + lon."
+            )
+        return self
+
+    @field_validator("geometry")
+    @classmethod
+    def _validate_geometry(
+        cls, value: GeoJSONGeometry | None,
+    ) -> GeoJSONGeometry | None:
+        """Строгая проверка GeoJSON: тип и структура координат."""
+        if value is None:
+            return None
+        allowed = {"Point", "Polygon", "MultiPolygon"}
+        if value.type not in allowed:
+            raise ValueError(
+                f"geometry.type должен быть одним из:"
+                f" {', '.join(sorted(allowed))}"
+            )
+        coords = value.coordinates
+        if value.type == "Point":
+            if (
+                not isinstance(coords, list)
+                or len(coords) < 2
+            ):
+                raise ValueError(
+                    "Point.coordinates: [lon, lat]"
+                )
+            lon, lat = coords[0], coords[1]
+            if not (-180 <= lon <= 180):
+                raise ValueError(
+                    f"lon={lon} вне диапазона [-180, 180]"
+                )
+            if not (-90 <= lat <= 90):
+                raise ValueError(
+                    f"lat={lat} вне диапазона [-90, 90]"
+                )
+        elif value.type == "Polygon":
+            # Минимум один линейный кольцевой массив
+            if (
+                not isinstance(coords, list)
+                or len(coords) < 1
+            ):
+                raise ValueError(
+                    "Polygon.coordinates: "
+                    "минимум одно кольцо"
+                )
+            ring = coords[0]
+            if (
+                not isinstance(ring, list)
+                or len(ring) < 4
+            ):
+                raise ValueError(
+                    "Polygon: кольцо должно содержать"
+                    " минимум 4 точки"
+                )
+            if ring[0] != ring[-1]:
+                raise ValueError(
+                    "Polygon: кольцо должно быть"
+                    " замкнутым (first == last)"
+                )
+        return value
 
 
 class HypothesisValidateRequest(BaseModel):
     status: HypothesisStatus = Field(
-        description="New status for the hypothesis"
+        description="Новый статус гипотезы",
     )
 
     @field_validator("status")
     @classmethod
-    def _status_is_a_verdict(cls, value: HypothesisStatus) -> HypothesisStatus:
-        """`pending` is the initial state, not a verdict a moderator can set.
-
-        This must be a validator, not model_post_init: an error raised there
-        escapes as a 500 instead of a 422.
+    def _status_is_a_verdict(
+        cls, value: HypothesisStatus,
+    ) -> HypothesisStatus:
+        """pending — начальное состояние, а не вердикт,
+        который может установить модератор.
         """
         allowed = {
             HypothesisStatus.approved,
@@ -220,13 +344,15 @@ class HypothesisValidateRequest(BaseModel):
         }
         if value not in allowed:
             raise ValueError(
-                f"Status must be one of: {', '.join(s.value for s in allowed)}"
+                "Status must be one of: "
+                f"{', '.join(s.value for s in allowed)}"
             )
         return value
 
 
 class HypothesisOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
+
 
     id: uuid.UUID
     author_id: uuid.UUID
@@ -236,6 +362,10 @@ class HypothesisOut(BaseModel):
     description: str
     photo_url: str | None
     status: HypothesisStatus
+
+    # P0-1: офлайн-поля
+    client_id: uuid.UUID | None = None
+    created_at_client: datetime | None = None
 
     trash_categories: list[str] | None = None
     dominant_category: TrashCategory | None = None
@@ -256,6 +386,7 @@ class HypothesisOut(BaseModel):
 class HypothesisValidateResponse(BaseModel):
     hypothesis: HypothesisOut
     event_id: uuid.UUID | None = None
+
 
 
 # ═══════════════════════════════════════════════════════════════════════════

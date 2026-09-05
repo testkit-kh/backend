@@ -28,13 +28,18 @@ from sqlalchemy import (
     Index,
     String,
     Text,
+    UniqueConstraint,
     Uuid,
 )
 from sqlalchemy import (
     Enum as SAEnum,
 )
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
-from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.orm import (
+    Mapped,
+    mapped_column,
+    relationship,
+)
 
 from app.cleanup_cost import AccessType, TrashCategory, TrashFraction
 from app.database import Base
@@ -305,59 +310,114 @@ class Hypothesis(Base):
         Uuid, primary_key=True, default=uuid.uuid4
     )
     author_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
     )
-    organization_id: Mapped[uuid.UUID] = mapped_column(
+    organization_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("organizations.id", ondelete="SET NULL"),
         nullable=True,
         index=True,
     )
 
-    lat: Mapped[float] = mapped_column(Float, nullable=False)
-    lon: Mapped[float] = mapped_column(Float, nullable=False)
+    # ---- P0-1: идемпотентность для офлайна ----
+    # Мобильное приложение генерирует UUID на устройстве и
+    # шлёт его вместе с точкой. Пара (author, client_id)
+    # уникальна — повторный POST вернёт 200 вместо дубля.
+    client_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, nullable=True,
+    )
+    #: Время создания на устройстве. Если старше серверного
+    #: более чем на 5 мин — точка пришла из офлайн-очереди.
+    created_at_client: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True,
+    )
 
-    # Native PostGIS point built from (lon, lat) at insertion time.
+    lat: Mapped[float] = mapped_column(
+        Float, nullable=False,
+    )
+    lon: Mapped[float] = mapped_column(
+        Float, nullable=False,
+    )
+
+    # Точка наблюдения — PostGIS POINT из (lon, lat).
     location = mapped_column(
-        Geometry(geometry_type="POINT", srid=4326, spatial_index=True),
+        Geometry(
+            geometry_type="POINT",
+            srid=4326,
+            spatial_index=True,
+        ),
         nullable=True,
     )
 
-    description: Mapped[str] = mapped_column(Text, nullable=False)
-    photo_url: Mapped[str | None] = mapped_column(String(2048), nullable=True)
+    # Полигон разлива / пятна загрязнения. Универсальный тип
+    # GEOMETRY: волонтёр может обвести и точку, и полигон.
+    geom = mapped_column(
+        Geometry(
+            geometry_type="GEOMETRY",
+            srid=4326,
+            spatial_index=False,
+        ),
+        nullable=True,
+    )
 
-    # ---- Характеристики мусора (заполняет автор гипотезы) ----------------
-    # Проект «Чистый берег» изучает не только факт загрязнения, но и состав,
-    # фракцию и объём — без этих полей нельзя ни спрогнозировать затраты на
-    # уборку, ни сравнить накопление между замерами на одной площадке.
+    description: Mapped[str] = mapped_column(
+        Text, nullable=False,
+    )
+    photo_url: Mapped[str | None] = mapped_column(
+        String(2048), nullable=True,
+    )
+
+    # ---- Характеристики мусора ----
+    # Проект изучает не только факт загрязнения, но и состав,
+    # фракцию и объём — без них нельзя спрогнозировать затраты
+    # на уборку и сравнить замеры на одной площадке.
     trash_categories: Mapped[list[str] | None] = mapped_column(
-        ARRAY(String(32)), nullable=True
+        ARRAY(String(32)), nullable=True,
     )
     dominant_category: Mapped[TrashCategory | None] = mapped_column(
-        SAEnum(TrashCategory, name="trash_category"), nullable=True
+        SAEnum(TrashCategory, name="trash_category"),
+        nullable=True,
     )
     fraction: Mapped[TrashFraction | None] = mapped_column(
-        SAEnum(TrashFraction, name="trash_fraction"), nullable=True
+        SAEnum(TrashFraction, name="trash_fraction"),
+        nullable=True,
     )
     access_type: Mapped[AccessType | None] = mapped_column(
-        SAEnum(AccessType, name="access_type"), nullable=True
+        SAEnum(AccessType, name="access_type"),
+        nullable=True,
     )
 
-    # Человек указывает либо объём, либо площадь пятна — что проще оценить
-    # на месте. Второе пересчитывается через среднюю толщину слоя.
-    estimated_area_m2: Mapped[float | None] = mapped_column(Float, nullable=True)
-    estimated_volume_m3: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # Человек указывает либо объём, либо площадь пятна —
+    # что проще оценить на месте.
+    estimated_area_m2: Mapped[float | None] = mapped_column(
+        Float, nullable=True,
+    )
+    estimated_volume_m3: Mapped[float | None] = mapped_column(
+        Float, nullable=True,
+    )
 
-    # Производные величины. Хранятся, а не считаются на лету: коэффициенты
-    # со временем поменяются, а смета, показанная ООПТ, должна остаться той,
-    # по которой принимали решение.
-    computed_volume_m3: Mapped[float | None] = mapped_column(Float, nullable=True)
-    computed_mass_kg: Mapped[float | None] = mapped_column(Float, nullable=True)
-    cleanup_cost_rub: Mapped[float | None] = mapped_column(Float, nullable=True)
-    cost_assumptions: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    # Производные величины. Хранятся, а не считаются на лету:
+    # коэффициенты со временем поменяются, а смета, показанная
+    # ООПТ, должна остаться той, по которой принимали решение.
+    computed_volume_m3: Mapped[float | None] = mapped_column(
+        Float, nullable=True,
+    )
+    computed_mass_kg: Mapped[float | None] = mapped_column(
+        Float, nullable=True,
+    )
+    cleanup_cost_rub: Mapped[float | None] = mapped_column(
+        Float, nullable=True,
+    )
+    cost_assumptions: Mapped[dict | None] = mapped_column(
+        JSONB, nullable=True,
+    )
 
-    # Гипотеза может быть очередным замером на площадке многолетних наблюдений.
+    # Замер на площадке многолетних наблюдений.
     monitoring_site_id: Mapped[uuid.UUID | None] = mapped_column(
-        ForeignKey("monitoring_sites.id", ondelete="SET NULL"),
+        ForeignKey(
+            "monitoring_sites.id", ondelete="SET NULL",
+        ),
         nullable=True,
         index=True,
     )
@@ -383,12 +443,32 @@ class Hypothesis(Base):
         nullable=False,
     )
 
-    author: Mapped[User] = relationship(foreign_keys=[author_id], lazy="joined")
+    author: Mapped[User] = relationship(
+        foreign_keys=[author_id], lazy="joined",
+    )
     organization: Mapped[Organization | None] = relationship(
-        back_populates="hypotheses", lazy="joined"
+        back_populates="hypotheses", lazy="joined",
     )
     event: Mapped[Event | None] = relationship(
-        back_populates="hypothesis", uselist=False, lazy="joined"
+        back_populates="hypothesis",
+        uselist=False,
+        lazy="joined",
+    )
+
+    __table_args__ = (
+        # P0-1: дедупликация офлайн-точек. Частичный уникальный
+        # индекс: client_id заполнен только у мобильных клиентов,
+        # веб может не слать его — NULL'ы не конфликтуют.
+        UniqueConstraint(
+            "author_id",
+            "client_id",
+            name="uq_hypotheses_author_client",
+        ),
+        Index(
+            "idx_hypotheses_geom",
+            "geom",
+            postgresql_using="gist",
+        ),
     )
 
 

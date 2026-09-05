@@ -1,8 +1,8 @@
 """
-Business-logic router — hypotheses, certificate, map layers.
+Роутер бизнес-логики — гипотезы, сертификаты, слои карты.
 
-All endpoints live under ``/api/v1`` and require a valid JWT.
-Role-based access is enforced per-handler (volunteer / staff / any).
+Все эндпоинты живут под ``/api/v1`` и требуют JWT.
+Ролевой контроль — внутри каждого обработчика.
 """
 
 from __future__ import annotations
@@ -10,17 +10,32 @@ from __future__ import annotations
 import json
 import logging
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
-from fastapi import APIRouter, Depends, HTTPException, status
-from geoalchemy2.functions import ST_AsGeoJSON, ST_Contains, ST_MakePoint, ST_SetSRID
-from sqlalchemy import func, select
+from fastapi import (
+    APIRouter,
+    Depends,
+    HTTPException,
+    Response,
+    status,
+)
+from geoalchemy2.functions import (
+    ST_AsGeoJSON,
+    ST_Contains,
+    ST_DWithin,
+    ST_GeomFromGeoJSON,
+    ST_Intersects,
+    ST_MakePoint,
+    ST_SetSRID,
+)
+from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.age import has_field_access
 from app.analytics import EventType, emit
 from app.auth import get_current_user
 from app.cleanup_cost import estimate_cleanup
+from app.config import settings
 from app.database import get_session
 from app.models import (
     CertificateStatus,
@@ -48,114 +63,263 @@ from app.schemas import (
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api/v1", tags=["business-logic"])
+router = APIRouter(
+    prefix="/api/v1", tags=["business-logic"],
+)
+
+# Порог в секундах для определения офлайн-режима.
+# Если клиентское время старше серверного более чем
+# на эту величину — точка была в очереди.
+_OFFLINE_THRESHOLD = timedelta(minutes=5)
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# Helper — role guards
-# ═══════════════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════
+# Хелперы — role guards
+# ═══════════════════════════════════════════════════════════
 
 def _require_volunteer(user: User) -> Volunteer:
-    """Return the Volunteer profile or raise 403."""
-    if user.role != UserRole.volunteer or user.volunteer is None:
+    """Волонтёрский профиль или 403."""
+    if user.role != UserRole.volunteer or not user.volunteer:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="This action is only available for volunteers.",
+            detail="Доступно только для волонтёров.",
         )
     return user.volunteer
 
 
 def _require_staff(user: User) -> Staff:
-    """Return the Staff profile or raise 403."""
-    if user.role != UserRole.staff or user.staff is None:
+    """Профиль сотрудника или 403."""
+    if user.role != UserRole.staff or not user.staff:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="This action is only available for staff members.",
+            detail="Доступно только для сотрудников ООПТ.",
         )
     return user.staff
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# 1. POST /api/v1/hypotheses — create a hypothesis (volunteer only)
-# ═══════════════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════
+# Вспомогательные функции для create_hypothesis
+# ═══════════════════════════════════════════════════════════
+
+def _extract_lat_lon(body: HypothesisCreateRequest):
+    """Извлечь lat/lon: из geometry (centroid) или из полей.
+
+    Geometry имеет приоритет — поля lat/lon остаются для
+    обратной совместимости со старым клиентом.
+    """
+    if body.geometry is not None:
+        if body.geometry.type == "Point":
+            lon = body.geometry.coordinates[0]
+            lat = body.geometry.coordinates[1]
+            return lat, lon
+        # Для полигона lat/lon обязательны — они задают
+        # «метку» точки на карте, а полигон хранится в geom.
+        if body.lat is not None and body.lon is not None:
+            return body.lat, body.lon
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                "Для Polygon нужны lat + lon"
+                " (метка точки на карте)."
+            ),
+        )
+    # Обратная совместимость — валидатор гарантирует,
+    # что lat и lon не None, если geometry отсутствует.
+    return body.lat, body.lon
+
+
+def _build_geom_wkt(body: HypothesisCreateRequest):
+    """Сериализовать клиентскую geometry в GeoJSON-строку
+    для ST_GeomFromGeoJSON. None, если не передана.
+    """
+    if body.geometry is None:
+        return None
+    return json.dumps({
+        "type": body.geometry.type,
+        "coordinates": body.geometry.coordinates,
+    })
+
+
+async def _find_org_with_buffer(
+    session: AsyncSession,
+    point,
+) -> uuid.UUID | None:
+    """P0-3: трёхступенчатый поиск ООПТ.
+
+    1) ST_Intersects — точка внутри полигона.
+    2) ST_DWithin   — точка в прибрежной буферной зоне.
+    3) None         — создаём без привязки к ООПТ.
+    """
+    # Шаг 1: точное попадание
+    q = (
+        select(Organization.id)
+        .where(
+            Organization.territory_geom.isnot(None),
+            ST_Intersects(
+                Organization.territory_geom, point,
+            ),
+        )
+        .limit(1)
+    )
+    result = await session.execute(q)
+    org_id = result.scalar_one_or_none()
+    if org_id is not None:
+        return org_id
+
+    # Шаг 2: буферная зона. ST_DWithin на geography
+    # принимает расстояние в метрах. Кастим geometry
+    # в geography через ::geography (SQL cast).
+    buffer_m = settings.COASTAL_BUFFER_KM * 1000
+    geog_territory = Organization.territory_geom.cast(
+        Geography(srid=4326),
+    )
+    geog_point = func.ST_SetSRID(
+        point, 4326,
+    ).cast(Geography(srid=4326))
+    q_buf = (
+        select(Organization.id)
+        .where(
+            Organization.territory_geom.isnot(None),
+            ST_DWithin(
+                geog_territory,
+                geog_point,
+                buffer_m,
+            ),
+        )
+        .limit(1)
+    )
+    result = await session.execute(q_buf)
+    org_id = result.scalar_one_or_none()
+    if org_id is not None:
+        logger.info(
+            "Точка попала в буферную зону"
+            " (%.1f км) ООПТ %s",
+            settings.COASTAL_BUFFER_KM,
+            org_id,
+        )
+        return org_id
+
+    # Шаг 3: ни одна ООПТ не найдена — допустимо
+    logger.info(
+        "Точка не попала ни в одну ООПТ;"
+        " создаём с organization_id = NULL.",
+    )
+    return None
+
+
+def _compute_offline_payload(
+    body: HypothesisCreateRequest,
+    now: datetime,
+) -> dict:
+    """Определить, была ли точка создана офлайн.
+
+    Если created_at_client старше серверного времени более
+    чем на 5 минут — добавляем mode: offline и считаем
+    queued_seconds.
+    """
+    if body.created_at_client is None:
+        return {"mode": "online"}
+    delta = now - body.created_at_client
+    if delta > _OFFLINE_THRESHOLD:
+        return {
+            "mode": "offline",
+            "queued_seconds": delta.total_seconds(),
+        }
+    return {"mode": "online"}
+
+
+# ═══════════════════════════════════════════════════════════
+# 1. POST /api/v1/hypotheses
+# ═══════════════════════════════════════════════════════════
 
 @router.post(
     "/hypotheses",
     response_model=HypothesisOut,
     status_code=status.HTTP_201_CREATED,
-    summary="Create a new ecological observation (hypothesis)",
+    summary="Создать гипотезу (экологическое наблюдение)",
 )
 async def create_hypothesis(
     body: HypothesisCreateRequest,
+    response: Response,
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
     vol = _require_volunteer(user)
 
-    # Два независимых условия. Согласие представителя проверяется отдельно от
-    # обучения: подросток может пройти курс, пока родитель подписывает бумагу,
-    # но в поле без документа не выходит.
+    # ---- Проверка доступа: согласие и обучение ----
     if not has_field_access(vol):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Нужно согласие законного представителя: участникам до 18 лет "
-                   "работа с картой открывается после его подтверждения.",
+            detail=(
+                "Нужно согласие законного представителя:"
+                " участникам до 18 лет работа с картой"
+                " открывается после его подтверждения."
+            ),
         )
-
-    # Доступ к карте даётся не за факт присланного сертификата, а за
-    # подтверждённый координатором. См. app/course.py.
     if vol.certificate_status != CertificateStatus.approved:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Карта открывается после проверки сертификата о прохождении "
-                   "курса. Текущий статус: "
-                   f"{vol.certificate_status.value}.",
+            detail=(
+                "Карта открывается после проверки"
+                " сертификата о прохождении курса."
+                f" Текущий статус:"
+                f" {vol.certificate_status.value}."
+            ),
         )
 
-    # --- Spatial lookup: which ООПТ polygon contains this point? -----------
-    # Build a PostGIS POINT from (lon, lat) — note the order: x=lon, y=lat.
-    point = ST_SetSRID(ST_MakePoint(body.lon, body.lat), 4326)
-
-    org_query = (
-        select(Organization.id)
-        .where(
-            Organization.territory_geom.isnot(None),
-            ST_Contains(Organization.territory_geom, point),
+    # ---- P0-1: идемпотентность офлайна ----
+    # Если client_id уже есть у этого автора — вернуть
+    # существующую запись с 200 (не 201, не 409).
+    if body.client_id is not None:
+        existing_q = select(Hypothesis).where(
+            Hypothesis.author_id == user.id,
+            Hypothesis.client_id == body.client_id,
         )
-        .limit(1)
+        existing = await session.execute(existing_q)
+        dup = existing.scalar_one_or_none()
+        if dup is not None:
+            # 200, а не 201: клиенту ясно, что это не новая
+            response.status_code = status.HTTP_200_OK
+            return HypothesisOut.model_validate(dup)
+
+    # ---- Координаты ----
+    lat, lon = _extract_lat_lon(body)
+    point = ST_SetSRID(
+        ST_MakePoint(lon, lat), 4326,
     )
-    result = await session.execute(org_query)
-    org_id: uuid.UUID | None = result.scalar_one_or_none()
 
-    if org_id is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="No organization territory contains the given coordinates. "
-                   "Please check lat/lon values.",
-        )
+    # ---- P0-3: поиск ООПТ с буферной зоной ----
+    org_id = await _find_org_with_buffer(
+        session, point,
+    )
 
-    # --- Проверка площадки многолетних наблюдений ---------------------------
+    # ---- Мониторинговая площадка ----
     if body.monitoring_site_id is not None:
-        site = await session.get(MonitoringSite, body.monitoring_site_id)
+        site = await session.get(
+            MonitoringSite, body.monitoring_site_id,
+        )
         if site is None:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail="Monitoring site not found.",
+                detail="Мониторинговая площадка не найдена.",
             )
-        if site.organization_id != org_id:
+        # Площадка должна быть из той же ООПТ, что и точка.
+        if org_id and site.organization_id != org_id:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Monitoring site belongs to a different territory "
-                       "than the point coordinates.",
+                detail=(
+                    "Площадка принадлежит другой ООПТ,"
+                    " чем координаты точки."
+                ),
             )
 
-    # --- Смета уборки -------------------------------------------------------
-    # Считается только если человек указал и объём (или площадь), и
-    # преобладающий тип, и способ доступа. Иначе поля остаются пустыми:
-    # нулевая смета хуже отсутствующей, потому что попадёт в суммы по ООПТ.
+    # ---- Смета уборки ----
     trash = body.trash
     estimate = None
-    if trash.dominant_category is not None and trash.access_type is not None:
+    if (
+        trash.dominant_category is not None
+        and trash.access_type is not None
+    ):
         estimate = estimate_cleanup(
             volume_m3=trash.estimated_volume_m3,
             area_m2=trash.estimated_area_m2,
@@ -163,13 +327,27 @@ async def create_hypothesis(
             access=trash.access_type,
         )
 
-    # --- Create hypothesis --------------------------------------------------
+    # ---- Построение geom из клиентского GeoJSON ----
+    geom_value = None
+    geojson_str = _build_geom_wkt(body)
+    if geojson_str is not None:
+        geom_value = func.ST_SetSRID(
+            func.ST_GeomFromGeoJSON(geojson_str), 4326,
+        )
+
+    # ---- Создание записи ----
+    now = datetime.now(UTC)
     hypothesis = Hypothesis(
         author_id=user.id,
         organization_id=org_id,
-        lat=body.lat,
-        lon=body.lon,
-        location=func.ST_SetSRID(func.ST_MakePoint(body.lon, body.lat), 4326),
+        client_id=body.client_id,
+        created_at_client=body.created_at_client,
+        lat=lat,
+        lon=lon,
+        location=func.ST_SetSRID(
+            func.ST_MakePoint(lon, lat), 4326,
+        ),
+        geom=geom_value,
         description=body.description,
         photo_url=body.photo_url,
         status=HypothesisStatus.pending,
@@ -183,62 +361,90 @@ async def create_hypothesis(
         access_type=trash.access_type,
         estimated_area_m2=trash.estimated_area_m2,
         estimated_volume_m3=trash.estimated_volume_m3,
-        computed_volume_m3=estimate.volume_m3 if estimate else None,
-        computed_mass_kg=estimate.mass_kg if estimate else None,
-        cleanup_cost_rub=estimate.total_rub if estimate else None,
-        cost_assumptions=estimate.assumptions if estimate else None,
+        computed_volume_m3=(
+            estimate.volume_m3 if estimate else None
+        ),
+        computed_mass_kg=(
+            estimate.mass_kg if estimate else None
+        ),
+        cleanup_cost_rub=(
+            estimate.total_rub if estimate else None
+        ),
+        cost_assumptions=(
+            estimate.assumptions if estimate else None
+        ),
         monitoring_site_id=body.monitoring_site_id,
     )
     session.add(hypothesis)
     await session.flush()
 
+    # ---- Аналитика ----
+    offline_info = _compute_offline_payload(body, now)
     await emit(
         session,
         EventType.point_created,
         user_id=user.id,
-        lat=body.lat,
-        lon=body.lon,
+        lat=lat,
+        lon=lon,
         payload={
             "hypothesis_id": str(hypothesis.id),
-            "organization_id": str(org_id),
-            "mode": "online",
+            "organization_id": (
+                str(org_id) if org_id else None
+            ),
+            **offline_info,
             "has_photo": body.photo_url is not None,
-            # Состав и объём попадают в событие, а не только в таблицу: KPI
-            # «сколько мусора найдено» и «сколько это стоит убрать» считаются
-            # по событийной шине, как и вся остальная аналитика.
             "trash_categories": (
                 [c.value for c in trash.trash_categories]
                 if trash.trash_categories
                 else None
             ),
             "dominant_category": (
-                trash.dominant_category.value if trash.dominant_category else None
+                trash.dominant_category.value
+                if trash.dominant_category
+                else None
             ),
-            "fraction": trash.fraction.value if trash.fraction else None,
-            "access_type": trash.access_type.value if trash.access_type else None,
-            "volume_m3": estimate.volume_m3 if estimate else None,
-            "mass_kg": estimate.mass_kg if estimate else None,
-            "cleanup_cost_rub": estimate.total_rub if estimate else None,
+            "fraction": (
+                trash.fraction.value
+                if trash.fraction
+                else None
+            ),
+            "access_type": (
+                trash.access_type.value
+                if trash.access_type
+                else None
+            ),
+            "volume_m3": (
+                estimate.volume_m3 if estimate else None
+            ),
+            "mass_kg": (
+                estimate.mass_kg if estimate else None
+            ),
+            "cleanup_cost_rub": (
+                estimate.total_rub if estimate else None
+            ),
             "monitoring_site_id": (
-                str(body.monitoring_site_id) if body.monitoring_site_id else None
+                str(body.monitoring_site_id)
+                if body.monitoring_site_id
+                else None
             ),
         },
     )
-    # Mirror event on the ООПТ side of the funnel: the same fact, but it is
-    # what the "active ООПТ" and "points in my zone" metrics count.
-    await emit(
-        session,
-        EventType.point_received_in_zone,
-        user_id=user.id,
-        lat=body.lat,
-        lon=body.lon,
-        payload={
-            "hypothesis_id": str(hypothesis.id),
-            "organization_id": str(org_id),
-        },
-    )
+    # Зеркальное событие для ООПТ-воронки
+    if org_id is not None:
+        await emit(
+            session,
+            EventType.point_received_in_zone,
+            user_id=user.id,
+            lat=lat,
+            lon=lon,
+            payload={
+                "hypothesis_id": str(hypothesis.id),
+                "organization_id": str(org_id),
+            },
+        )
 
     return HypothesisOut.model_validate(hypothesis)
+
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -400,23 +606,38 @@ async def get_map_layers(
             )
         )
 
-    # --- Layer 2: approved hypothesis points --------------------------------
+    # --- Layer 2: approved hypothesis points/polygons ---------------------
+    # Добавляем ST_AsGeoJSON(geom) — если волонтёр отправил полигон разлива,
+    # он сохранён в поле geom. Если нет — fallback на Point из lat/lon.
     hyp_query = select(
         Hypothesis.id,
         Hypothesis.lat,
         Hypothesis.lon,
         Hypothesis.description,
         Hypothesis.status,
+        ST_AsGeoJSON(Hypothesis.geom).label("geojson"),
     ).where(Hypothesis.status == HypothesisStatus.approved)
 
     hyp_result = await session.execute(hyp_query)
     for row in hyp_result.all():
+        # Проверяем, есть ли полигон (geom не пустой)
+        if row.geojson:
+            # Полигон есть — используем его оригинальную геометрию
+            geom_dict = json.loads(row.geojson)
+            geometry = GeoJSONGeometry(
+                type=geom_dict["type"],
+                coordinates=geom_dict["coordinates"],
+            )
+        else:
+            # Fallback: создаём Point из lat/lon
+            geometry = GeoJSONGeometry(
+                type="Point",
+                coordinates=[row.lon, row.lat],
+            )
+
         features.append(
             GeoJSONFeature(
-                geometry=GeoJSONGeometry(
-                    type="Point",
-                    coordinates=[row.lon, row.lat],
-                ),
+                geometry=geometry,
                 properties=GeoJSONProperties(
                     id=row.id,
                     description=row.description,
