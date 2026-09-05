@@ -204,7 +204,8 @@ def main() -> int:
         r = client.get("/api/v1/hypotheses/my", headers=h, params={"limit": 100})
         if r.status_code == 200:
             items = r.json().get("items", r.json() if isinstance(r.json(), list) else [])
-            rep.ok("GET /api/v1/hypotheses/my", f"n={len(items) if isinstance(items, list) else '?'}")
+            n = len(items) if isinstance(items, list) else "?"
+            rep.ok("GET /api/v1/hypotheses/my", f"n={n}")
         else:
             rep.fail("GET /api/v1/hypotheses/my", f"{r.status_code} {r.text[:200]}")
 
@@ -320,7 +321,8 @@ def main() -> int:
 
             r = client.get("/api/v1/organizations/me", headers=h)
             if r.status_code == 200:
-                rep.ok("GET /organizations/me", f"territory_source={r.json().get('territory_source')}")
+                src = r.json().get("territory_source")
+                rep.ok("GET /organizations/me", f"territory_source={src}")
             else:
                 rep.fail("GET /organizations/me", f"{r.status_code}")
 

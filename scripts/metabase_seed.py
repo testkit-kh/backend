@@ -227,7 +227,9 @@ class Metabase:
         return self._post("/api/card", body)["id"]
 
     # -- дашборды ----------------------------------------------------------
-    def ensure_dashboard(self, name: str, cards: list[Card], card_ids: list[int], scoped: bool) -> int:
+    def ensure_dashboard(
+        self, name: str, cards: list[Card], card_ids: list[int], scoped: bool
+    ) -> int:
         dashboard_id = None
         for existing in self._get("/api/dashboard"):
             if existing["name"] == name:
