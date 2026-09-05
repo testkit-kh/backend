@@ -13,10 +13,10 @@ Revises: 0007
 Create Date: 2026-09-05
 """
 
-from alembic import op
 import sqlalchemy as sa
 from geoalchemy2 import Geometry
 
+from alembic import op
 
 # revision identifiers
 revision = "0008"

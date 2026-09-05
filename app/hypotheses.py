@@ -19,16 +19,15 @@ from fastapi import (
     Response,
     status,
 )
+from geoalchemy2 import Geography
 from geoalchemy2.functions import (
     ST_AsGeoJSON,
-    ST_Contains,
     ST_DWithin,
-    ST_GeomFromGeoJSON,
     ST_Intersects,
     ST_MakePoint,
     ST_SetSRID,
 )
-from sqlalchemy import and_, func, select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.age import has_field_access

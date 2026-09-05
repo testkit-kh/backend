@@ -5,18 +5,20 @@ import sys
 base = pathlib.Path(__file__).resolve().parent
 
 # 1. Model check
-from app.models import Hypothesis
+from app.models import Hypothesis  # noqa: E402
+
 cols = [c.name for c in Hypothesis.__table__.columns]
 for expected in ("client_id", "created_at_client", "geom"):
     assert expected in cols, f"MISSING {expected}"
 print("✓ Model: client_id, created_at_client, geom present")
 
 # 2. Schema check
-from app.schemas import (
+from app.schemas import (  # noqa: E402
     HypothesisCreateRequest,
     HypothesisOut,
     HypothesisValidateRequest,
 )
+
 req = HypothesisCreateRequest(
     geometry={"type": "Point", "coordinates": [37.62, 55.75]},
     description="Test via GeoJSON",
@@ -45,7 +47,8 @@ v = HypothesisValidateRequest(status="approved")
 print(f"✓ ValidateRequest: {v.status}")
 
 # 3. Import check for hypotheses router
-from app.hypotheses import router
+from app.hypotheses import router  # noqa: E402
+
 routes = [r.path for r in router.routes if hasattr(r, "methods")]
 print(f"✓ Router routes: {routes}")
 
