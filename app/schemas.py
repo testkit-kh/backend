@@ -127,8 +127,93 @@ class StaffProfile(UserBase):
     organization: OrganizationOut
 
 
+class CoordinatorProfile(UserBase):
+    """Координатор программы со стороны Фонда.
+
+    Кроме базовых полей пользователя добавить нечего: координатор не
+    привязан к организации и не проходит курс/согласие — это программная
+    роль, а не территориальная и не волонтёрская.
+    """
+
+
 # Union-like response for /auth/me
-UserProfileResponse = VolunteerProfile | StaffProfile
+UserProfileResponse = VolunteerProfile | StaffProfile | CoordinatorProfile
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Organization profile — кабинет ООПТ + верификация координатором
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class StaffMemberOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    full_name: str
+    email: str
+
+
+class OrganizationProfileOut(BaseModel):
+    """Профиль организации для кабинета сотрудника ООПТ.
+
+    Расширяет OrganizationOut списком сотрудников и счётчиками участков /
+    площадок наблюдений — то, с чего сотрудник обычно начинает работу в
+    кабинете, не переходя на другие вкладки.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    name: str
+    inn: str
+    cadastral_number: str | None
+    verification_status: OrgVerificationStatus
+    created_at: datetime
+    contact_email: str | None = None
+    contact_phone: str | None = None
+    description: str | None = None
+
+    staff_members: list[StaffMemberOut] = Field(default_factory=list)
+    parcels_count: int = 0
+    monitoring_sites_count: int = 0
+
+
+class OrganizationUpdateRequest(BaseModel):
+    """PATCH-семантика: применяются только переданные поля.
+
+    Название и ИНН сюда не входят — они канонические, взяты из ЕГРЮЛ при
+    регистрации, и правка руками означала бы разойтись с реестром.
+    """
+
+    contact_email: EmailStr | None = None
+    contact_phone: str | None = Field(default=None, max_length=32)
+    description: str | None = Field(default=None, max_length=4096)
+
+
+class OrganizationListItemOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    name: str
+    inn: str
+    cadastral_number: str | None
+    verification_status: OrgVerificationStatus
+    created_at: datetime
+
+
+class OrganizationVerifyRequest(BaseModel):
+    approved: bool
+    reason: str | None = Field(
+        default=None,
+        max_length=1024,
+        description="Обязательна при отказе — организация должна понимать, что исправить",
+    )
+
+    @model_validator(mode="after")
+    def _reason_required_on_reject(self) -> OrganizationVerifyRequest:
+        if not self.approved and not (self.reason or "").strip():
+            raise ValueError("reason is required when rejecting an organization")
+        return self
 
 
 # ═══════════════════════════════════════════════════════════════════════════

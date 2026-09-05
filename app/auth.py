@@ -37,6 +37,7 @@ from app.models import (
 )
 from app.registry import InvalidInn, RegistryUnavailable, lookup_company
 from app.schemas import (
+    CoordinatorProfile,
     OrganizationOut,
     OrganizationRegisterRequest,
     StaffProfile,
@@ -386,7 +387,7 @@ async def login(
 
 @router.get(
     "/me",
-    response_model=VolunteerProfile | StaffProfile,
+    response_model=VolunteerProfile | StaffProfile | CoordinatorProfile,
     summary="Get current user profile (role-dependent)",
 )
 async def get_me(
@@ -428,6 +429,15 @@ async def get_me(
             role=current_user.role,
             created_at=current_user.created_at,
             organization=OrganizationOut.model_validate(st.organization),
+        )
+
+    if current_user.role == UserRole.coordinator:
+        return CoordinatorProfile(
+            id=current_user.id,
+            email=current_user.email,
+            full_name=current_user.full_name,
+            role=current_user.role,
+            created_at=current_user.created_at,
         )
 
     raise HTTPException(

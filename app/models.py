@@ -244,6 +244,12 @@ class Organization(Base):
     inn: Mapped[str] = mapped_column(String(12), unique=True, nullable=False, index=True)
     cadastral_number: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
+    #: Редактируются сотрудником в кабинете ООПТ (PATCH /organizations/me).
+    #: Не пересекаются с name/inn — те канонические, из ЕГРЮЛ.
+    contact_email: Mapped[str | None] = mapped_column(String(320), nullable=True)
+    contact_phone: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+
     # Native PostGIS polygon — SRID 4326 (WGS-84, lon/lat).
     # Requires CREATE EXTENSION postgis; in the database.
     territory_geom = mapped_column(
