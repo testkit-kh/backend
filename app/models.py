@@ -142,6 +142,13 @@ class HypothesisStatus(str, enum.Enum):
     cleaned = "cleaned"
 
 
+class HypothesisSource(str, enum.Enum):
+    """Откуда пришла гипотеза. Нужен для KPI precision автодетекции."""
+
+    manual = "manual"
+    uav_auto = "uav_auto"
+
+
 class EventStatus(str, enum.Enum):
     """Lifecycle of a field event."""
 
@@ -656,6 +663,16 @@ class Hypothesis(Base):
         default=HypothesisStatus.pending,
         nullable=False,
     )
+    #: manual — волонтёр; uav_auto — кандидат от ML-сервиса.
+    source: Mapped[HypothesisSource] = mapped_column(
+        SAEnum(
+            HypothesisSource,
+            name="hypothesis_source",
+            create_constraint=True,
+        ),
+        default=HypothesisSource.manual,
+        nullable=False,
+    )
     #: Причина отказа. Нужна в ленте «Мои точки»: без неё отказ выглядит
     #: как молчаливое «нет», и волонтёр не понимает, что исправить в
     #: следующей заявке — а именно на этом шаге люди и отваливаются.
@@ -703,6 +720,7 @@ class Hypothesis(Base):
             "geom",
             postgresql_using="gist",
         ),
+        Index("ix_hypotheses_source", "source"),
     )
 
 
@@ -715,10 +733,13 @@ class Event(Base):
     __tablename__ = "events"
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
-    hypothesis_id: Mapped[uuid.UUID] = mapped_column(
+    #: Nullable: сотрудник может завести выезд без привязки к точке
+    #: (субботник, плановый обход). Автосоздание из approve гипотезы
+    #: по-прежнему заполняет поле.
+    hypothesis_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("hypotheses.id", ondelete="CASCADE"),
         unique=True,
-        nullable=False,
+        nullable=True,
     )
     organization_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("organizations.id", ondelete="CASCADE"),
@@ -808,7 +829,7 @@ class Event(Base):
         nullable=False,
     )
 
-    hypothesis: Mapped[Hypothesis] = relationship(back_populates="event")
+    hypothesis: Mapped[Hypothesis | None] = relationship(back_populates="event")
     participants: Mapped[list[EventParticipant]] = relationship(
         back_populates="event",
         lazy="selectin",
@@ -1202,6 +1223,107 @@ class CadastralParcel(Base):
     __table_args__ = (
         Index("idx_cadastral_parcels_geom", "geom", postgresql_using="gist"),
         Index("ix_cadastral_parcels_status", "status"),
+    )
+
+
+# ---------------------------------------------------------------------------
+# ML scans / findings — прогоны детекции и сохранённые находки
+# ---------------------------------------------------------------------------
+
+
+class MlScan(Base):
+    """Один прогон detect/area. GeoJSON храним сами: PNG на ML живёт ~15 мин."""
+
+    __tablename__ = "ml_scans"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    requester_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    organization_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("organizations.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    #: [min_lon, min_lat, max_lon, max_lat]
+    bbox: Mapped[list] = mapped_column(JSONB, nullable=False)
+    zoom: Mapped[int] = mapped_column(Integer, nullable=False)
+    tile_source: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    ml_job_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    summary: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    geojson: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    overlay_bounds: Mapped[list | None] = mapped_column(JSONB, nullable=True)
+    imagery: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    fraud_flags: Mapped[list | None] = mapped_column(JSONB, nullable=True)
+    model_info: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    candidates_suppressed: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(UTC),
+        nullable=False,
+        index=True,
+    )
+
+    findings: Mapped[list[MlFinding]] = relationship(
+        back_populates="scan",
+        cascade="all, delete-orphan",
+        lazy="selectin",
+    )
+
+
+class MlFinding(Base):
+    """Один объект мусора из прогона. Может быть связан с hypothesis (uav_auto)."""
+
+    __tablename__ = "ml_findings"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    scan_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("ml_scans.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    detection_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    lat: Mapped[float | None] = mapped_column(Float, nullable=True)
+    lon: Mapped[float | None] = mapped_column(Float, nullable=True)
+    geom = mapped_column(
+        Geometry(
+            geometry_type="GEOMETRY",
+            srid=4326,
+            spatial_index=False,
+        ),
+        nullable=True,
+    )
+    trash_categories: Mapped[list[str] | None] = mapped_column(
+        ARRAY(String(32)),
+        nullable=True,
+    )
+    dominant_category: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    fraction: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+    estimated_volume_m3: Mapped[float | None] = mapped_column(Float, nullable=True)
+    estimated_mass_kg: Mapped[float | None] = mapped_column(Float, nullable=True)
+    label_ru: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    color_hex: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    hypothesis_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("hypotheses.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(UTC),
+        nullable=False,
+        index=True,
+    )
+
+    scan: Mapped[MlScan] = relationship(back_populates="findings")
+
+    __table_args__ = (
+        Index("idx_ml_findings_geom", "geom", postgresql_using="gist"),
     )
 
 

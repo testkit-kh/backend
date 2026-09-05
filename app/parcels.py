@@ -36,6 +36,7 @@ from app.rosreestr import (
 )
 from app.schemas import (
     CadastralParcelCreateRequest,
+    CadastralParcelFromOsmRequest,
     CadastralParcelOut,
     GeoJSONFeature,
     GeoJSONFeatureCollection,
@@ -117,15 +118,48 @@ async def _rebuild_territory(session: AsyncSession, organization_id: uuid.UUID) 
             CadastralParcel.geom.isnot(None),
         )
     )
-    if union is None:
+    organization = await session.get(Organization, organization_id)
+    if organization is None:
         return
 
-    organization = await session.get(Organization, organization_id)
-    if organization is not None:
-        # Объединение участков почти всегда многоконтурное, поэтому колонка
-        # territory_geom расширена до MULTIPOLYGON миграцией 0005.
-        organization.territory_geom = func.ST_Multi(union)
+    if union is None:
+        organization.territory_geom = None
+        organization.territory_source = None
+        organization.territory_osm_id = None
+        return
+
+    # Объединение участков почти всегда многоконтурное, поэтому колонка
+    # territory_geom расширена до MULTIPOLYGON миграцией 0005.
+    organization.territory_geom = func.ST_Multi(union)
+
+    sources = (
+        await session.scalars(
+            select(CadastralParcel.source).where(
+                CadastralParcel.organization_id == organization_id,
+                CadastralParcel.geom.isnot(None),
+            )
+        )
+    ).all()
+    unique_sources = {s for s in sources if s}
+    if unique_sources == {"osm"}:
+        organization.territory_source = "osm"
+        osm_number = await session.scalar(
+            select(CadastralParcel.cadastral_number).where(
+                CadastralParcel.organization_id == organization_id,
+                CadastralParcel.source == "osm",
+                CadastralParcel.geom.isnot(None),
+            ).limit(1)
+        )
+        # OSM:relation/123 → relation/123
+        if osm_number and osm_number.startswith("OSM:"):
+            organization.territory_osm_id = osm_number.removeprefix("OSM:")
+        else:
+            organization.territory_osm_id = None
+    elif unique_sources <= {"rosreestr", "egrn", "manual"} and "osm" not in unique_sources:
         organization.territory_source = "egrn"
+        organization.territory_osm_id = None
+    else:
+        organization.territory_source = "mixed"
         organization.territory_osm_id = None
 
 
@@ -187,6 +221,82 @@ async def add_parcel(
     # 202, а не 201: границы ещё не получены. Фронт показывает участок со
     # статусом «уточняем границы» и обновляет список.
     background.add_task(resolve_parcel_task, parcel.id)
+
+    return CadastralParcelOut.model_validate(parcel)
+
+
+@router.post(
+    "/organizations/me/parcels/from-osm",
+    response_model=CadastralParcelOut,
+    status_code=status.HTTP_201_CREATED,
+    summary="Добавить участок по полигону OpenStreetMap",
+)
+async def add_parcel_from_osm(
+    body: CadastralParcelFromOsmRequest,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    """Фолбэк, когда кадастра нет или ФГИС молчит.
+
+    Границы приходят с клиента (Nominatim), бэкенд только сохраняет и
+    пересобирает territory_geom. Юридически это не ЕГРН — source=osm.
+    """
+    organization_id = _require_staff_org(user)
+    number = f"OSM:{body.osm_id}"
+
+    existing = await session.scalar(
+        select(CadastralParcel).where(CadastralParcel.cadastral_number == number)
+    )
+    if existing is not None:
+        if existing.organization_id != organization_id:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Этот OSM-объект уже закреплён за другой организацией.",
+            )
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Этот OSM-объект уже добавлен.",
+        )
+
+    geometry = func.ST_Multi(
+        func.ST_SetSRID(func.ST_GeomFromGeoJSON(body.geometry.model_dump_json()), 4326)
+    )
+    # В номер кладём и имя — только в resolve_error/нет: cadastral_number
+    # остаётся стабильным ключом OSM:type/id. Имя — в emit payload.
+    parcel = CadastralParcel(
+        organization_id=organization_id,
+        cadastral_number=number,
+        geom=geometry,
+        status=ParcelStatus.resolved,
+        source="osm",
+        resolve_error=None,
+        resolved_at=datetime.now(UTC),
+    )
+    session.add(parcel)
+    await session.flush()
+
+    parcel.area_ha = await session.scalar(
+        select(func.ST_Area(cast(CadastralParcel.geom, Geography)) / 10_000.0).where(
+            CadastralParcel.id == parcel.id
+        )
+    )
+    await _rebuild_territory(session, organization_id)
+    await session.flush()
+
+    await emit(
+        session,
+        EventType.geo_zone_created,
+        user_id=user.id,
+        payload={
+            "kind": "cadastral_parcel",
+            "parcel_id": str(parcel.id),
+            "cadastral_number": number,
+            "organization_id": str(organization_id),
+            "source": "osm",
+            "osm_id": body.osm_id,
+            "name": body.name,
+        },
+    )
 
     return CadastralParcelOut.model_validate(parcel)
 
@@ -311,7 +421,7 @@ async def set_parcel_geometry(
     )
     parcel.geom = geometry
     parcel.status = ParcelStatus.resolved
-    parcel.source = "manual"
+    parcel.source = body.source or "manual"
     parcel.resolve_error = None
     parcel.resolved_at = datetime.now(UTC)
     await session.flush()
@@ -393,10 +503,13 @@ async def parcels_geojson(
                 ),
                 properties=GeoJSONProperties(
                     id=row.id,
-                    name=row.org_name,
+                    # На карте важен участок/OSM, а не юрлицо оператора —
+                    # иначе попап выглядит как «территория ООО …».
+                    name=row.cadastral_number,
                     description=(
-                        f"{row.cadastral_number} · {row.org_name} (ИНН {row.org_inn})"
+                        f"{row.cadastral_number}"
                         + (f" · {row.area_ha:.1f} га" if row.area_ha else "")
+                        + f" · оператор: {row.org_name}"
                     ),
                     layer="cadastral_parcel",
                 ),

@@ -42,6 +42,7 @@ from app.schemas import (
     EventBeforeAfterRequest,
     EventCompleteRequest,
     EventCompleteResponse,
+    EventCreateRequest,
     EventJoinOut,
     EventListOut,
     EventOut,
@@ -202,6 +203,90 @@ async def list_events(
         limit=limit,
         offset=offset,
     )
+
+
+# ═══════════════════════════════════════════════════════════
+# 1b. POST /api/v1/events — создать мероприятие вручную
+# ═══════════════════════════════════════════════════════════
+
+
+@router.post(
+    "",
+    response_model=EventOut,
+    status_code=status.HTTP_201_CREATED,
+    summary="Создать мероприятие вручную (сотрудник ООПТ)",
+)
+async def create_event(
+    body: EventCreateRequest,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    """Выезд без точки или к уже одобренной гипотезе без своего мероприятия.
+
+    Автосоздание при approve гипотезы остаётся; эта ручка закрывает дыру
+    «в кабинете пусто, пока никто не подтвердил точку».
+    """
+    staff = _require_staff(user)
+    org_id = staff.organization_id
+
+    hypothesis_id = body.hypothesis_id
+    if hypothesis_id is not None:
+        hypothesis = await session.get(Hypothesis, hypothesis_id)
+        if hypothesis is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Гипотеза не найдена.",
+            )
+        if hypothesis.organization_id != org_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Гипотеза относится к другой ООПТ.",
+            )
+        if hypothesis.status not in (
+            HypothesisStatus.approved,
+            HypothesisStatus.drone_requested,
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    "Привязать можно только одобренную точку "
+                    f"(сейчас: {hypothesis.status.value})."
+                ),
+            )
+        existing = await session.scalar(
+            select(Event.id).where(Event.hypothesis_id == hypothesis_id)
+        )
+        if existing is not None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="У этой гипотезы уже есть мероприятие.",
+            )
+
+    event = Event(
+        hypothesis_id=hypothesis_id,
+        organization_id=org_id,
+        title=body.title.strip(),
+        description=(body.description.strip() if body.description else None),
+        place=(body.place.strip() if body.place else None),
+        scheduled_at=body.scheduled_at,
+        status=EventStatus.planned,
+    )
+    session.add(event)
+    await session.flush()
+
+    await emit(
+        session,
+        EventType.cleanup_event_created,
+        user_id=user.id,
+        payload={
+            "event_id": str(event.id),
+            "hypothesis_id": str(hypothesis_id) if hypothesis_id else None,
+            "organization_id": str(org_id),
+            "source": "manual",
+        },
+    )
+
+    return await _to_event_out(session, event)
 
 
 # ═══════════════════════════════════════════════════════════
@@ -377,6 +462,46 @@ async def update_event(
 
 
 # ═══════════════════════════════════════════════════════════
+# 4b. POST /api/v1/events/{id}/cancel
+# ═══════════════════════════════════════════════════════════
+
+
+@router.post(
+    "/{event_id}/cancel",
+    response_model=EventOut,
+    summary="Отменить мероприятие (сотрудник ООПТ)",
+)
+async def cancel_event(
+    event_id: uuid.UUID,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    staff = _require_staff(user)
+    event = await _get_event_for_staff(session, event_id, staff)
+
+    if event.status == EventStatus.completed:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Завершённое мероприятие нельзя отменить.",
+        )
+    if event.status == EventStatus.cancelled:
+        return await _to_event_out(session, event)
+
+    event.status = EventStatus.cancelled
+    await session.flush()
+
+    log_moderation(
+        session,
+        actor_id=user.id,
+        entity_id=event.id,
+        action="event_cancelled",
+        reason=None,
+    )
+
+    return await _to_event_out(session, event)
+
+
+# ═══════════════════════════════════════════════════════════
 # 5. POST /api/v1/events/{id}/complete
 # ═══════════════════════════════════════════════════════════
 
@@ -451,32 +576,33 @@ async def complete_event(
             participant.attended = True
         attendance_marked = len(found)
 
-    # ---- Гипотеза → cleaned ----
+    # ---- Гипотеза → cleaned (если привязана) ----
     # Явный select по hypothesis_id, а не event.hypothesis: связь ленивая,
     # и обращение к ней в async-сессии упало бы в MissingGreenlet.
-    hypothesis = await session.scalar(
-        select(Hypothesis).where(Hypothesis.id == event.hypothesis_id)
-    )
-    if hypothesis is None:
-        # FK с ON DELETE CASCADE делает это невозможным, но если целостность
-        # всё же нарушена — падать нужно здесь, а не отдавать «убрано» по
-        # точке, которой нет.
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Гипотеза, привязанная к мероприятию, не найдена.",
+    hypothesis: Hypothesis | None = None
+    if event.hypothesis_id is not None:
+        hypothesis = await session.scalar(
+            select(Hypothesis).where(Hypothesis.id == event.hypothesis_id)
         )
-    previous_status = hypothesis.status
-    hypothesis.status = HypothesisStatus.cleaned
+        if hypothesis is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Гипотеза, привязанная к мероприятию, не найдена.",
+            )
+        previous_status = hypothesis.status
+        hypothesis.status = HypothesisStatus.cleaned
 
-    await session.flush()
+        await session.flush()
 
-    if previous_status != HypothesisStatus.cleaned:
-        notify_point_status_changed(
-            session,
-            author_id=hypothesis.author_id,
-            hypothesis_id=hypothesis.id,
-            new_status=HypothesisStatus.cleaned,
-        )
+        if previous_status != HypothesisStatus.cleaned:
+            notify_point_status_changed(
+                session,
+                author_id=hypothesis.author_id,
+                hypothesis_id=hypothesis.id,
+                new_status=HypothesisStatus.cleaned,
+            )
+    else:
+        await session.flush()
 
     log_moderation(
         session,
@@ -494,23 +620,25 @@ async def complete_event(
         session,
         EventType.cleanup_event_completed,
         user_id=user.id,
-        lat=hypothesis.lat,
-        lon=hypothesis.lon,
+        lat=hypothesis.lat if hypothesis else None,
+        lon=hypothesis.lon if hypothesis else None,
         payload={
             "event_id": str(event.id),
-            "hypothesis_id": str(hypothesis.id),
+            "hypothesis_id": str(hypothesis.id) if hypothesis else None,
             "organization_id": str(event.organization_id),
-            "author_id": str(hypothesis.author_id),
+            "author_id": str(hypothesis.author_id) if hypothesis and hypothesis.author_id else None,
             "actual_participants": body.actual_participants,
             "registered_participants": registered or 0,
             "waste_volume_m3": body.waste_volume_m3,
             "waste_mass_kg": body.waste_mass_kg,
-            # Разница «оценили на глаз» и «вывезли на самом деле» — то, чем
-            # калибруются будущие сметы.
-            "estimated_volume_m3": hypothesis.computed_volume_m3,
-            "estimated_mass_kg": hypothesis.computed_mass_kg,
+            "estimated_volume_m3": (
+                hypothesis.computed_volume_m3 if hypothesis else None
+            ),
+            "estimated_mass_kg": hypothesis.computed_mass_kg if hypothesis else None,
             "days_from_report": (
-                (event.completed_at - hypothesis.created_at).days if event.completed_at else None
+                (event.completed_at - hypothesis.created_at).days
+                if hypothesis and event.completed_at
+                else None
             ),
         },
     )
@@ -520,8 +648,8 @@ async def complete_event(
 
     return EventCompleteResponse(
         event=out,
-        hypothesis_id=hypothesis.id,
-        hypothesis_status=hypothesis.status,
+        hypothesis_id=hypothesis.id if hypothesis else None,
+        hypothesis_status=hypothesis.status if hypothesis else None,
         attendance_marked=attendance_marked,
     )
 

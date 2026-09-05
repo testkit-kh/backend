@@ -24,6 +24,7 @@ from app.database import engine
 from app.events import router as events_router
 from app.hypotheses import router as hypotheses_router
 from app.logging_config import configure_logging
+from app.ml import router as ml_router
 from app.monitoring import router as monitoring_router
 from app.notifications import router as notifications_router
 from app.organizations import router as organizations_router
@@ -85,6 +86,7 @@ app.include_router(public_router)
 app.include_router(users_router)
 app.include_router(volunteers_router)
 app.include_router(uploads_router)
+app.include_router(ml_router)
 
 
 @app.get("/", tags=["health"])

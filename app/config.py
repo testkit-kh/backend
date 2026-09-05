@@ -117,6 +117,15 @@ class Settings(BaseSettings):
     # в пределах этого буфера от них.
     COASTAL_BUFFER_KM: float = 20.0
 
+    # --- ML-сервис (детекция мусора) ----------------------------------------
+    # Отдельный хост (обычно ml.{DOMAIN} на машине с GPU). Пустой BASE_URL
+    # или ML_ENABLED=false — ручки сканов отвечают 503, остальной API живёт.
+    ML_ENABLED: bool = True
+    ML_BASE_URL: str = ""
+    ML_API_KEY: str = ""
+    #: Инференс на CPU может идти минуты; GPU — единицы секунд.
+    ML_TIMEOUT_S: float = 180.0
+
     @field_validator("CORS_ORIGINS", mode="before")
     @classmethod
     def _split_origins(cls, value: object) -> object:

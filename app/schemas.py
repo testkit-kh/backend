@@ -24,6 +24,7 @@ from app.models import (
     ConsentStatus,
     EducationLevel,
     EventStatus,
+    HypothesisSource,
     HypothesisStatus,
     NotificationKind,
     OrgVerificationStatus,
@@ -507,6 +508,7 @@ class HypothesisOut(BaseModel):
     description: str
     photo_url: str | None
     status: HypothesisStatus
+    source: HypothesisSource = HypothesisSource.manual
     reject_reason: str | None = None
 
     # P0-1: офлайн-поля
@@ -595,7 +597,7 @@ class EventOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: uuid.UUID
-    hypothesis_id: uuid.UUID
+    hypothesis_id: uuid.UUID | None = None
     organization_id: uuid.UUID
     title: str
     description: str | None = None
@@ -632,6 +634,26 @@ class EventListOut(BaseModel):
     offset: int
 
 
+class EventCreateRequest(BaseModel):
+    """Создать мероприятие вручную (без гипотезы или с привязкой к точке)."""
+
+    title: str = Field(min_length=1, max_length=512)
+    description: str | None = Field(default=None, max_length=4096)
+    place: str | None = Field(default=None, max_length=512)
+    scheduled_at: datetime | None = None
+    hypothesis_id: uuid.UUID | None = Field(
+        default=None,
+        description="Опционально: привязать к уже одобренной гипотезе без своего мероприятия",
+    )
+
+    @field_validator("scheduled_at")
+    @classmethod
+    def _tz_aware_create(cls, value: datetime | None) -> datetime | None:
+        if value is not None and value.tzinfo is None:
+            return value.replace(tzinfo=UTC)
+        return value
+
+
 class EventUpdateRequest(BaseModel):
     """PATCH-семантика: применяются только переданные поля.
 
@@ -640,6 +662,7 @@ class EventUpdateRequest(BaseModel):
     None.
     """
 
+    title: str | None = Field(default=None, min_length=1, max_length=512)
     scheduled_at: datetime | None = None
     place: str | None = Field(default=None, max_length=512)
     description: str | None = Field(default=None, max_length=4096)
@@ -658,7 +681,8 @@ class EventUpdateRequest(BaseModel):
     def _not_empty(self) -> EventUpdateRequest:
         if not self.model_fields_set:
             raise ValueError(
-                "Нужно передать хотя бы одно из полей: scheduled_at, place, description"
+                "Нужно передать хотя бы одно из полей: "
+                "title, scheduled_at, place, description"
             )
         return self
 
@@ -721,12 +745,12 @@ class EventCompleteResponse(BaseModel):
 
     Статус гипотезы возвращается явно: смена точки на cleaned — побочный
     эффект этого вызова, и клиент должен видеть, что он произошёл, не
-    перезапрашивая точку.
+    перезапрашивая точку. Для мероприятия без гипотезы оба поля — null.
     """
 
     event: EventOut
-    hypothesis_id: uuid.UUID
-    hypothesis_status: HypothesisStatus
+    hypothesis_id: uuid.UUID | None = None
+    hypothesis_status: HypothesisStatus | None = None
     attendance_marked: int = 0
 
 
@@ -1085,6 +1109,37 @@ class CadastralParcelCreateRequest(BaseModel):
     )
 
 
+class CadastralParcelFromOsmRequest(BaseModel):
+    """Участок без кадастра: полигон из OpenStreetMap.
+
+    В БД хранится как `cadastral_number = OSM:{osm_id}` — уникальный ключ
+    без коллизии с реальными номерами ЕГРН. Источник границ — `osm`.
+    """
+
+    osm_id: str = Field(
+        min_length=3,
+        max_length=64,
+        description="Стабильный id: relation/1148559 или way/123",
+    )
+    name: str = Field(min_length=1, max_length=256, description="Подпись в списке участков")
+    geometry: GeoJSONGeometry
+
+    @field_validator("osm_id")
+    @classmethod
+    def _osm_id_shape(cls, value: str) -> str:
+        cleaned = value.strip()
+        if "/" not in cleaned:
+            raise ValueError("osm_id должен быть вида type/id, например relation/1148559")
+        return cleaned
+
+    @field_validator("geometry")
+    @classmethod
+    def _polygonal_osm(cls, value: GeoJSONGeometry) -> GeoJSONGeometry:
+        if value.type not in ("Polygon", "MultiPolygon"):
+            raise ValueError("geometry must be a Polygon or MultiPolygon")
+        return value
+
+
 class CadastralParcelOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -1107,12 +1162,24 @@ class ParcelGeometryRequest(BaseModel):
     """
 
     geometry: GeoJSONGeometry
+    #: manual (по умолчанию) или osm — откуда взяли полигон.
+    source: str | None = Field(default="manual", max_length=32)
 
     @field_validator("geometry")
     @classmethod
     def _polygonal(cls, value: GeoJSONGeometry) -> GeoJSONGeometry:
         if value.type not in ("Polygon", "MultiPolygon"):
             raise ValueError("geometry must be a Polygon or MultiPolygon")
+        return value
+
+    @field_validator("source")
+    @classmethod
+    def _known_source(cls, value: str | None) -> str | None:
+        if value is None:
+            return "manual"
+        allowed = {"manual", "osm"}
+        if value not in allowed:
+            raise ValueError(f"source должен быть одним из: {', '.join(sorted(allowed))}")
         return value
 
 

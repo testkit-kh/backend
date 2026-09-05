@@ -303,8 +303,8 @@ def main() -> int:
                 headers=h,
                 json={
                     "source": "osm",
-                    "osm_id": "relation/test",
-                    "name": "Тестовый полигон",
+                    "osm_id": "relation/5576397",
+                    "name": "Командорский заповедник",
                     "geometry": geom,
                 },
             )
