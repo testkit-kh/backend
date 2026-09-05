@@ -17,11 +17,13 @@ from geoalchemy2.functions import ST_AsGeoJSON, ST_Contains, ST_MakePoint, ST_Se
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.age import has_field_access
 from app.analytics import EventType, emit
 from app.auth import get_current_user
 from app.cleanup_cost import estimate_cleanup
 from app.database import get_session
 from app.models import (
+    CertificateStatus,
     Event,
     EventStatus,
     Hypothesis,
@@ -34,7 +36,6 @@ from app.models import (
     Volunteer,
 )
 from app.schemas import (
-    CertificateRequest,
     GeoJSONFeature,
     GeoJSONFeatureCollection,
     GeoJSONGeometry,
@@ -43,7 +44,6 @@ from app.schemas import (
     HypothesisOut,
     HypothesisValidateRequest,
     HypothesisValidateResponse,
-    VolunteerProfileOut,
 )
 
 logger = logging.getLogger(__name__)
@@ -92,12 +92,24 @@ async def create_hypothesis(
 ):
     vol = _require_volunteer(user)
 
-    # Business rule: volunteer must have completed training
-    if not vol.is_trained:
+    # Два независимых условия. Согласие представителя проверяется отдельно от
+    # обучения: подросток может пройти курс, пока родитель подписывает бумагу,
+    # но в поле без документа не выходит.
+    if not has_field_access(vol):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="You must complete training before submitting hypotheses. "
-                   "Upload your Stepik certificate at POST /api/v1/volunteers/me/certificate.",
+            detail="Нужно согласие законного представителя: участникам до 18 лет "
+                   "работа с картой открывается после его подтверждения.",
+        )
+
+    # Доступ к карте даётся не за факт присланного сертификата, а за
+    # подтверждённый координатором. См. app/course.py.
+    if vol.certificate_status != CertificateStatus.approved:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Карта открывается после проверки сертификата о прохождении "
+                   "курса. Текущий статус: "
+                   f"{vol.certificate_status.value}.",
         )
 
     # --- Spatial lookup: which ООПТ polygon contains this point? -----------
@@ -347,47 +359,6 @@ async def validate_hypothesis(
         hypothesis=HypothesisOut.model_validate(hypothesis),
         event_id=event_id,
     )
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-# 4. POST /api/v1/volunteers/me/certificate — submit training cert
-# ═══════════════════════════════════════════════════════════════════════════
-
-@router.post(
-    "/volunteers/me/certificate",
-    response_model=VolunteerProfileOut,
-    summary="Submit a Stepik certificate to confirm volunteer training",
-)
-async def submit_certificate(
-    body: CertificateRequest,
-    user: User = Depends(get_current_user),
-    session: AsyncSession = Depends(get_session),
-):
-    vol = _require_volunteer(user)
-
-    vol.stepik_cert_url = str(body.stepik_cert_url)
-    vol.is_trained = True
-    await session.flush()
-
-    await emit(
-        session,
-        EventType.certificate_uploaded,
-        user_id=user.id,
-        payload={"kind": "url"},
-    )
-    # TODO(step 3): today the certificate is trusted on sight, so verification
-    # and map access are emitted in the same breath. Once moderation lands,
-    # these two move to the moderator's handler and `method` becomes
-    # manual/auto for real.
-    await emit(
-        session,
-        EventType.certificate_verified,
-        user_id=user.id,
-        payload={"method": "auto", "status": "approved", "reviewer_id": None},
-    )
-    await emit(session, EventType.map_access_granted, user_id=user.id)
-
-    return VolunteerProfileOut.model_validate(vol)
 
 
 # ═══════════════════════════════════════════════════════════════════════════

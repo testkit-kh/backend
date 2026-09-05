@@ -13,4 +13,5 @@ bcrypt==5.*
 PyJWT==2.*
 python-multipart==0.0.*
 httpx==0.28.*
+rosreestr2coord==5.3.*
 structlog==25.*

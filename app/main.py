@@ -15,8 +15,13 @@ from sqlalchemy import text
 from app.auth import router as auth_router
 from app.config import settings
 from app.database import engine
+from app.consent import router as consent_router
+from app.course import router as course_router
 from app.hypotheses import router as hypotheses_router
 from app.monitoring import router as monitoring_router
+from app.notifications import router as notifications_router
+from app.parcels import router as parcels_router
+from app.registry.router import router as registry_router
 
 app = FastAPI(
     title="Eco-Project MVP",
@@ -35,6 +40,11 @@ app.add_middleware(
 app.include_router(auth_router)
 app.include_router(hypotheses_router)
 app.include_router(monitoring_router)
+app.include_router(course_router)
+app.include_router(notifications_router)
+app.include_router(consent_router)
+app.include_router(parcels_router)
+app.include_router(registry_router)
 
 
 @app.get("/", tags=["health"])

@@ -5,7 +5,7 @@ Pydantic v2 schemas for request / response serialization.
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any
 
 from pydantic import (
@@ -20,7 +20,11 @@ from pydantic import (
 
 from app.cleanup_cost import AccessType, TrashCategory, TrashFraction
 from app.models import (
+    CertificateStatus,
+    ConsentStatus,
+    ParcelStatus,
     HypothesisStatus,
+    NotificationKind,
     OrgVerificationStatus,
     UserRole,
 )
@@ -33,7 +37,12 @@ class VolunteerRegisterRequest(BaseModel):
     email: EmailStr
     password: str = Field(min_length=8, max_length=128)
     full_name: str = Field(min_length=1, max_length=256)
-    is_over_14: bool
+
+    #: Дата рождения вместо флага «мне есть 14»: 14–17 требуют согласия
+    #: законного представителя, а флаг этого различия не несёт. Опциональна
+    #: ради обратной совместимости со старым клиентом, который шлёт is_over_14.
+    birth_date: date | None = None
+    is_over_14: bool = True
 
     # Attribution — feeds the "conversion by channel" KPI. Optional: an
     # unknown channel is recorded as such rather than rejected.
@@ -92,7 +101,10 @@ class UserBase(BaseModel):
 class VolunteerProfile(UserBase):
     is_trained: bool
     is_over_14: bool
-    stepik_cert_url: str | None = None
+    birth_date: date | None = None
+    consent_status: ConsentStatus = ConsentStatus.not_required
+    certificate_status: CertificateStatus = CertificateStatus.none
+    certificate_url: str | None = None
 
 
 class OrganizationOut(BaseModel):
@@ -251,18 +263,85 @@ class HypothesisValidateResponse(BaseModel):
 # ═══════════════════════════════════════════════════════════════════════════
 
 class CertificateRequest(BaseModel):
-    stepik_cert_url: HttpUrl
+    certificate_url: HttpUrl
 
 
 class VolunteerProfileOut(BaseModel):
-    """Returned from certificate endpoint (includes cert URL)."""
+    """Returned from certificate endpoints."""
     model_config = ConfigDict(from_attributes=True)
 
     id: uuid.UUID
     user_id: uuid.UUID
     is_trained: bool
     is_over_14: bool
-    stepik_cert_url: str | None
+    certificate_url: str | None
+    certificate_status: CertificateStatus
+    certificate_submitted_at: datetime | None = None
+    certificate_reviewed_at: datetime | None = None
+    certificate_reject_reason: str | None = None
+
+
+class CertificateReviewRequest(BaseModel):
+    approved: bool
+    reason: str | None = Field(
+        default=None,
+        max_length=1024,
+        description="Обязательна при отказе — волонтёр должен понимать, что исправить",
+    )
+
+    @model_validator(mode="after")
+    def _reason_required_on_reject(self) -> CertificateReviewRequest:
+        if not self.approved and not (self.reason or "").strip():
+            raise ValueError("reason is required when rejecting a certificate")
+        return self
+
+
+class PendingCertificateOut(BaseModel):
+    volunteer_id: uuid.UUID
+    user_id: uuid.UUID
+    full_name: str
+    email: str
+    certificate_url: str | None
+    certificate_submitted_at: datetime | None
+    course_redirect_at: datetime | None
+
+
+class CourseStatusOut(BaseModel):
+    """Один экран «где я на пути обучения» — чтобы фронт не собирал его из
+    трёх разных ручек."""
+
+    course_url: str
+    certificate_status: CertificateStatus
+    certificate_url: str | None
+    certificate_submitted_at: datetime | None
+    certificate_reviewed_at: datetime | None
+    certificate_reject_reason: str | None
+    course_redirect_at: datetime | None
+    map_access_granted_at: datetime | None
+    has_map_access: bool
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Notifications
+# ═══════════════════════════════════════════════════════════════════════════
+
+class NotificationOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    kind: NotificationKind
+    title: str
+    body: str | None
+    action_url: str | None
+    payload: dict[str, Any]
+    read_at: datetime | None
+    clicked_at: datetime | None
+    created_at: datetime
+
+
+class NotificationListOut(BaseModel):
+    items: list[NotificationOut]
+    unread_count: int
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -389,3 +468,113 @@ class SiteAccumulationOut(BaseModel):
     shoreline_length_m: float | None
     intervals: list[AccumulationInterval]
     mean_kg_per_day: float | None
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Registry — автозаполнение по ИНН
+# ═══════════════════════════════════════════════════════════════════════════
+
+class CompanyInfoOut(BaseModel):
+    """Сведения из ЕГРЮЛ. `source` наружу отдаётся намеренно: фронт должен
+    показывать, откуда данные, а на защите — что источник первичный."""
+
+    inn: str
+    name: str
+    short_name: str | None = None
+    ogrn: str | None = None
+    kpp: str | None = None
+    address: str | None = None
+    region: str | None = None
+    management: str | None = None
+    registered_at: str | None = None
+    entity_type: str | None = None
+    is_active: bool = True
+    source: str
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Parental consent
+# ═══════════════════════════════════════════════════════════════════════════
+
+class ParentalConsentCreateRequest(BaseModel):
+    representative_name: str = Field(min_length=1, max_length=256)
+    representative_phone: str = Field(
+        min_length=5, max_length=32, pattern=r"^[\d\s\-\+\(\)]+$"
+    )
+    representative_email: EmailStr
+    relation: str | None = Field(
+        default=None, max_length=64, description="мать / отец / опекун"
+    )
+    scan_url: HttpUrl | None = Field(
+        default=None, description="Скан подписанного согласия"
+    )
+
+
+class ParentalConsentOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    volunteer_id: uuid.UUID
+    representative_name: str
+    representative_phone: str
+    representative_email: str
+    relation: str | None
+    scan_url: str | None
+    status: ConsentStatus
+    reject_reason: str | None
+    submitted_at: datetime
+    reviewed_at: datetime | None
+
+
+class ConsentReviewRequest(BaseModel):
+    approved: bool
+    reason: str | None = Field(default=None, max_length=1024)
+
+    @model_validator(mode="after")
+    def _reason_required_on_reject(self) -> ConsentReviewRequest:
+        if not self.approved and not (self.reason or "").strip():
+            raise ValueError("reason is required when rejecting a consent")
+        return self
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Cadastral parcels
+# ═══════════════════════════════════════════════════════════════════════════
+
+class CadastralParcelCreateRequest(BaseModel):
+    cadastral_number: str = Field(
+        min_length=10,
+        max_length=64,
+        description="Формат 41:01:0000000:1",
+    )
+
+
+class CadastralParcelOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    organization_id: uuid.UUID
+    cadastral_number: str
+    area_ha: float | None
+    status: ParcelStatus
+    source: str | None
+    resolve_error: str | None
+    resolved_at: datetime | None
+    created_at: datetime
+
+
+class ParcelGeometryRequest(BaseModel):
+    """Ручной ввод границ участка.
+
+    Не запасной путь, а равноправный: ФГИС ЕГРН недоступен значительную часть
+    времени, и ждать от него границы для всех участков нельзя.
+    """
+
+    geometry: GeoJSONGeometry
+
+    @field_validator("geometry")
+    @classmethod
+    def _polygonal(cls, value: GeoJSONGeometry) -> GeoJSONGeometry:
+        if value.type not in ("Polygon", "MultiPolygon"):
+            raise ValueError("geometry must be a Polygon or MultiPolygon")
+        return value

@@ -22,10 +22,13 @@ from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.age import MIN_AGE, age_at, required_consent_status
 from app.analytics import EventType, emit
 from app.config import settings
 from app.database import get_session
+from app.registry import InvalidInn, RegistryUnavailable, lookup_company
 from app.models import (
+    ConsentStatus,
     Organization,
     OrgVerificationStatus,
     Staff,
@@ -96,28 +99,24 @@ def decode_access_token(token: str) -> dict:
 # External INN verification — MOCK / STUB
 # ---------------------------------------------------------------------------
 
-async def verify_inn_external(inn: str) -> bool:
-    """
-    Mock function simulating a call to an external government API
-    that validates the INN of an organization.
+async def verify_inn_external(session: AsyncSession, inn: str) -> tuple[bool, str | None]:
+    """Проверка ИНН по ЕГРЮЛ.
 
-    Returns
-    -------
-    bool
-        True  — INN is valid
-        False — INN is invalid
+    Возвращает (действующая ли организация, её наименование).
+    Бросает RegistryUnavailable, если источник не ответил — вызывающий код
+    переводит заявку в ручную модерацию, а не отказывает пользователю.
 
-    Raises
-    ------
-    Exception
-        Simulates network / service errors.
+    Контрольная сумма проверяется до сети (`app/registry/checksum.py`):
+    опечатку нет смысла нести в ЕГРЮЛ.
     """
-    # ---- Stub behaviour for development / testing -------------------------
-    # Return True for any well-formed INN (10 or 12 digits).
-    # To test the "external API down" path, raise an exception here.
-    if len(inn) in (10, 12) and inn.isdigit():
-        return True
-    return False
+    try:
+        info = await lookup_company(session, inn)
+    except InvalidInn:
+        return False, None
+
+    if info is None:
+        return False, None
+    return info.is_active, info.name
 
 
 # ---------------------------------------------------------------------------
@@ -168,12 +167,27 @@ async def register_volunteer(
     body: VolunteerRegisterRequest,
     session: AsyncSession = Depends(get_session),
 ):
-    # Business rule: must be ≥ 14 years old
-    if not body.is_over_14:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Volunteers must be at least 14 years old (is_over_14 must be true).",
-        )
+    # Возраст: 14 — нижняя граница самостоятельного участия, до 18 нужно
+    # согласие законного представителя. Если дата рождения не прислана,
+    # опираемся на флаг — старый клиент шлёт только его.
+    if body.birth_date is not None:
+        age = age_at(body.birth_date)
+        if age < MIN_AGE:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Самостоятельное участие — с {MIN_AGE} лет. "
+                       "Для младших участников есть формат со школой.",
+            )
+        is_over_14 = True
+        consent_status = required_consent_status(body.birth_date)
+    else:
+        if not body.is_over_14:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Volunteers must be at least 14 years old (is_over_14 must be true).",
+            )
+        is_over_14 = True
+        consent_status = ConsentStatus.not_required
 
     # Check duplicate email
     existing = await session.execute(
@@ -196,7 +210,9 @@ async def register_volunteer(
 
     volunteer = Volunteer(
         user_id=user.id,
-        is_over_14=body.is_over_14,
+        is_over_14=is_over_14,
+        birth_date=body.birth_date,
+        consent_status=consent_status,
         is_trained=False,
     )
     session.add(volunteer)
@@ -210,7 +226,9 @@ async def register_volunteer(
             "role": UserRole.volunteer.value,
             "source": body.source or "direct",
             "referred_by": str(body.referred_by) if body.referred_by else None,
-            "is_over_14": body.is_over_14,
+            "is_over_14": is_over_14,
+            "age": age_at(body.birth_date) if body.birth_date else None,
+            "requires_consent": consent_status == ConsentStatus.awaiting,
         },
     )
 
@@ -222,6 +240,10 @@ async def register_volunteer(
         created_at=user.created_at,
         is_trained=volunteer.is_trained,
         is_over_14=volunteer.is_over_14,
+        birth_date=volunteer.birth_date,
+        consent_status=volunteer.consent_status,
+        certificate_status=volunteer.certificate_status,
+        certificate_url=volunteer.certificate_url,
     )
 
 
@@ -257,13 +279,14 @@ async def register_organization(
 
     # ---- External INN verification (with graceful fallback) ---------------
     verification_status = OrgVerificationStatus.pending
+    registry_name: str | None = None
     try:
-        is_valid = await verify_inn_external(body.inn)
+        is_valid, registry_name = await verify_inn_external(session, body.inn)
         verification_status = (
             OrgVerificationStatus.verified if is_valid
             else OrgVerificationStatus.failed
         )
-    except Exception:
+    except RegistryUnavailable:
         # External API is down — do NOT fail the whole registration.
         # Mark for manual review instead.
         logger.warning(
@@ -273,9 +296,10 @@ async def register_organization(
         )
         verification_status = OrgVerificationStatus.manual_review
 
-    # Create organization
+    # Наименование из ЕГРЮЛ приоритетнее введённого руками: в реестре оно
+    # каноническое, а пользователь напишет «Кроноцкий» вместо полного.
     org = Organization(
-        name=body.org_name,
+        name=registry_name or body.org_name,
         inn=body.inn,
         cadastral_number=body.cadastral_number,
         verification_status=verification_status,
@@ -393,6 +417,10 @@ async def get_me(
             created_at=current_user.created_at,
             is_trained=vol.is_trained,
             is_over_14=vol.is_over_14,
+            birth_date=vol.birth_date,
+            consent_status=vol.consent_status,
+            certificate_status=vol.certificate_status,
+            certificate_url=vol.certificate_url,
         )
 
     if current_user.role == UserRole.staff:
