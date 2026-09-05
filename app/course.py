@@ -16,7 +16,6 @@ import uuid
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from fastapi.responses import RedirectResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -35,6 +34,7 @@ from app.models import (
 from app.schemas import (
     CertificateRequest,
     CertificateReviewRequest,
+    CourseRedirectOut,
     CourseStatusOut,
     PendingCertificateOut,
     VolunteerProfileOut,
@@ -68,9 +68,8 @@ def _require_coordinator(user: User) -> None:
 
 @router.get(
     "/course/redirect",
-    status_code=status.HTTP_307_TEMPORARY_REDIRECT,
+    response_model=CourseRedirectOut,
     summary="Уйти на курс «Школы Защитников Природы»",
-    response_class=RedirectResponse,
 )
 async def course_redirect(
     user: User = Depends(get_current_user),
@@ -115,7 +114,7 @@ async def course_redirect(
         },
     )
 
-    return RedirectResponse(url=settings.COURSE_SIGNUP_URL, status_code=307)
+    return CourseRedirectOut(url=settings.COURSE_SIGNUP_URL)
 
 
 @router.get(

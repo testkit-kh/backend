@@ -306,6 +306,14 @@ class PendingCertificateOut(BaseModel):
     course_redirect_at: datetime | None
 
 
+class CourseRedirectOut(BaseModel):
+    """Куда идти дальше. JSON, а не HTTP-редирект: ручка требует Bearer-токен,
+    а обычная навигация браузера (клик по `<a href>`) заголовков не шлёт —
+    поэтому фронт делает авторизованный запрос сюда и сам переходит по url."""
+
+    url: str
+
+
 class CourseStatusOut(BaseModel):
     """Один экран «где я на пути обучения» — чтобы фронт не собирал его из
     трёх разных ручек."""

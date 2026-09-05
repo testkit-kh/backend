@@ -287,7 +287,11 @@ class Staff(Base):
     )
 
     user: Mapped[User] = relationship(back_populates="staff")
-    organization: Mapped[Organization] = relationship(back_populates="staff_members")
+    #: joined, не select: /auth/me читает org синхронно из уже открытой
+    #: async-сессии — implicit lazy load там роняет запрос в MissingGreenlet.
+    organization: Mapped[Organization] = relationship(
+        back_populates="staff_members", lazy="joined"
+    )
 
 
 # ---------------------------------------------------------------------------
