@@ -70,9 +70,12 @@ async def reset(session) -> None:
         .all()
     )
     if demo_user_ids:
-        await session.execute(delete(AnalyticsEvent).where(AnalyticsEvent.user_id.in_(demo_user_ids)))
+        await session.execute(
+            delete(AnalyticsEvent).where(AnalyticsEvent.user_id.in_(demo_user_ids))
+        )
         await session.execute(delete(User).where(User.id.in_(demo_user_ids)))
-    await session.execute(delete(Organization).where(Organization.inn.in_([o["inn"] for o in ORGS])))
+    demo_inns = [o["inn"] for o in ORGS]
+    await session.execute(delete(Organization).where(Organization.inn.in_(demo_inns)))
     await session.commit()
 
 
@@ -156,8 +159,15 @@ async def seed() -> dict[str, int]:
                 sent_at = redirect_at + timedelta(days=RNG.uniform(3, 10))
                 variant = RNG.choice(["control", "warm"])
                 add_event(
-                    EventType.reminder_sent, user.id, sent_at,
-                    {"kind": "course_not_finished", "stage": 1, "variant": variant, "channel": "email"},
+                    EventType.reminder_sent,
+                    user.id,
+                    sent_at,
+                    {
+                        "kind": "course_not_finished",
+                        "stage": 1,
+                        "variant": variant,
+                        "channel": "email",
+                    },
                 )
                 if RNG.random() < (0.45 if variant == "warm" else 0.25):
                     click_at = sent_at + timedelta(hours=RNG.uniform(0.5, 30))
@@ -243,7 +253,9 @@ async def seed() -> dict[str, int]:
                     continue  # осталось в очереди на верификацию
 
                 validate_at = point_at + timedelta(hours=RNG.uniform(1, 240))
-                status = RNG.choices(["approved", "rejected", "drone_requested"], weights=[70, 20, 10])[0]
+                status = RNG.choices(
+                    ["approved", "rejected", "drone_requested"], weights=[70, 20, 10]
+                )[0]
                 add_event(
                     EventType.point_validated, staff_by_org[org.id].id, validate_at,
                     {
