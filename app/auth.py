@@ -26,7 +26,6 @@ from app.age import MIN_AGE, age_at, required_consent_status
 from app.analytics import EventType, emit
 from app.config import settings
 from app.database import get_session
-from app.registry import InvalidInn, RegistryUnavailable, lookup_company
 from app.models import (
     ConsentStatus,
     Organization,
@@ -36,6 +35,7 @@ from app.models import (
     UserRole,
     Volunteer,
 )
+from app.registry import InvalidInn, RegistryUnavailable, lookup_company
 from app.schemas import (
     OrganizationOut,
     OrganizationRegisterRequest,

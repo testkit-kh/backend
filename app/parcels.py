@@ -37,11 +37,11 @@ from app.rosreestr import (
 from app.schemas import (
     CadastralParcelCreateRequest,
     CadastralParcelOut,
-    ParcelGeometryRequest,
     GeoJSONFeature,
     GeoJSONFeatureCollection,
     GeoJSONGeometry,
     GeoJSONProperties,
+    ParcelGeometryRequest,
 )
 
 logger = logging.getLogger(__name__)

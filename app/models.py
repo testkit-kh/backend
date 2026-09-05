@@ -614,6 +614,10 @@ class Notification(Base):
         JSONB, nullable=False, default=dict, server_default="{}"
     )
 
+    #: Ключ дедупликации напоминаний: user + вид + этап. У обычных
+    #: уведомлений пуст — они не повторяются по расписанию.
+    dedupe_key: Mapped[str | None] = mapped_column(String(128), nullable=True)
+
     read_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
@@ -632,6 +636,12 @@ class Notification(Base):
             "ix_notifications_unread",
             "user_id",
             postgresql_where=read_at.is_(None),
+        ),
+        Index(
+            "uq_notifications_dedupe_key",
+            "dedupe_key",
+            unique=True,
+            postgresql_where=dedupe_key.isnot(None),
         ),
     )
 

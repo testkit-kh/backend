@@ -18,8 +18,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import get_current_user
 from app.database import get_session
-from app.models import Notification, User
-from app.schemas import NotificationListOut, NotificationOut
+from app.models import Notification, User, UserRole
+from app.reminders import collect_due, dispatch
+from app.schemas import NotificationListOut, NotificationOut, ReminderDispatchOut
 
 logger = logging.getLogger(__name__)
 
@@ -105,3 +106,40 @@ async def mark_all_read(
     await session.flush()
 
     return NotificationListOut(items=[], unread_count=0)
+
+
+@router.post(
+    "/dispatch-reminders",
+    response_model=ReminderDispatchOut,
+    summary="Разослать назревшие напоминания прямо сейчас (координатор)",
+)
+async def dispatch_reminders_now(
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+    dry_run: bool = Query(
+        default=False,
+        description="Только показать, кому и что уйдёт, ничего не отправляя",
+    ),
+):
+    """Ручной запуск рассылки.
+
+    Планировщик и так тикает раз в час, но на демонстрации ждать час нельзя, а
+    подкручивать часы на сервере — плохая идея. `dry_run` показывает список
+    адресатов, не трогая ни базу, ни события.
+    """
+    if user.role != UserRole.coordinator:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Рассылку запускает координатор программы.",
+        )
+
+    if dry_run:
+        due = await collect_due(session)
+        return ReminderDispatchOut(
+            sent=0,
+            due=len(due),
+            preview=[f"{r.kind.value}/{r.stage} → {r.user_id}" for r in due[:20]],
+        )
+
+    sent = await dispatch(session)
+    return ReminderDispatchOut(sent=sent, due=sent, preview=[])

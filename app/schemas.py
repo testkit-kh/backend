@@ -22,10 +22,10 @@ from app.cleanup_cost import AccessType, TrashCategory, TrashFraction
 from app.models import (
     CertificateStatus,
     ConsentStatus,
-    ParcelStatus,
     HypothesisStatus,
     NotificationKind,
     OrgVerificationStatus,
+    ParcelStatus,
     UserRole,
 )
 
@@ -344,6 +344,14 @@ class NotificationListOut(BaseModel):
     unread_count: int
 
 
+class ReminderDispatchOut(BaseModel):
+    """Итог рассылки. `due` при dry_run — сколько бы ушло."""
+
+    sent: int
+    due: int
+    preview: list[str]
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # GeoJSON — map layers
 # ═══════════════════════════════════════════════════════════════════════════
@@ -578,3 +586,34 @@ class ParcelGeometryRequest(BaseModel):
         if value.type not in ("Polygon", "MultiPolygon"):
             raise ValueError("geometry must be a Polygon or MultiPolygon")
         return value
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Analytics
+# ═══════════════════════════════════════════════════════════════════════════
+
+class DashboardEmbedOut(BaseModel):
+    """Подписанная ссылка на дашборд Metabase.
+
+    `expires_in` отдаётся, чтобы фронт перезапрашивал ссылку до истечения
+    срока, а не показывал пользователю протухший iframe.
+    """
+
+    slug: str
+    title: str
+    url: str
+    expires_in: int
+    scoped_to_organization: bool
+
+
+class AnalyticsSummaryOut(BaseModel):
+    """Числа для плашек. Смысл зависит от роли: волонтёр видит свои точки,
+    сотрудник — точки своей ООПТ, координатор — программу целиком."""
+
+    pending: int
+    approved: int
+    rejected: int
+    drone_requested: int
+    confirmed_volume_m3: float
+    confirmed_cleanup_cost_rub: float
+    certificate_status: CertificateStatus
