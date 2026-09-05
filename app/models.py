@@ -296,6 +296,35 @@ class VolunteerEducation(Base):
     volunteer: Mapped[Volunteer] = relationship(back_populates="education")
 
 
+class IssuedCertificate(Base):
+    """Выданный сертификат «Чистого берега» после approve координатором.
+
+    Отдельно от ``certificate_url`` волонтёра: тот — ссылка на курс iSpring,
+    а это наш документ с кодом проверки для школы / портфолио.
+    """
+
+    __tablename__ = "issued_certificates"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    code: Mapped[str] = mapped_column(String(32), unique=True, nullable=False, index=True)
+    volunteer_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("volunteers.id", ondelete="CASCADE"),
+        unique=True,
+        nullable=False,
+    )
+    full_name: Mapped[str] = mapped_column(String(256), nullable=False)
+    course: Mapped[str] = mapped_column(String(256), nullable=False)
+    points_confirmed: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    hours: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    issued_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(UTC),
+        nullable=False,
+    )
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    payload: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+
+
 # ---------------------------------------------------------------------------
 # Organizations (ООПТ)
 # ---------------------------------------------------------------------------

@@ -16,6 +16,7 @@ from sqlalchemy import text
 
 from app.analytics.dashboards import router as analytics_router
 from app.auth import router as auth_router
+from app.certificates import router as certificates_router
 from app.config import settings
 from app.consent import router as consent_router
 from app.course import router as course_router
@@ -73,6 +74,7 @@ app.include_router(hypotheses_router)
 app.include_router(events_router)
 app.include_router(monitoring_router)
 app.include_router(course_router)
+app.include_router(certificates_router)
 app.include_router(notifications_router)
 app.include_router(consent_router)
 app.include_router(parcels_router)

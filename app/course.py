@@ -21,6 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.analytics import EventType, emit
 from app.auth import get_current_user
+from app.certificates import issue_for_volunteer
 from app.config import settings
 from app.database import get_session
 from app.models import (
@@ -292,6 +293,9 @@ async def review_certificate(
         volunteer.is_trained = True
         volunteer.map_access_granted_at = now
         await emit(session, EventType.map_access_granted, user_id=volunteer.user_id)
+        owner = await session.get(User, volunteer.user_id)
+        if owner is not None:
+            await issue_for_volunteer(session, volunteer, full_name=owner.full_name)
 
     session.add(
         Notification(

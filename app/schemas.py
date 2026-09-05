@@ -1235,4 +1235,25 @@ class UploadPresignOut(BaseModel):
     key: str
 
 
+class IssuedCertificateOut(BaseModel):
+    """Сертификат волонтёра для скачивания и шеринга."""
+
+    code: str
+    pdf_url: str
+    issued_at: datetime
+
+
+class CertificateVerificationOut(BaseModel):
+    """Публичная проверка подлинности. Поля заполнены только при valid=True."""
+
+    valid: bool
+    revoked: bool = False
+    full_name: str | None = None
+    course: str | None = None
+    issued_at: datetime | None = None
+    points_confirmed: int | None = None
+    hours: float | None = None
+    revoked_at: datetime | None = None
+
+
 VolunteerProfile.model_rebuild()
