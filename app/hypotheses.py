@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import uuid
@@ -28,7 +29,7 @@ from geoalchemy2.functions import (
     ST_MakePoint,
     ST_SetSRID,
 )
-from sqlalchemy import func, select
+from sqlalchemy import func, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.age import has_field_access
@@ -44,12 +45,15 @@ from app.models import (
     Hypothesis,
     HypothesisStatus,
     MonitoringSite,
+    Notification,
+    NotificationKind,
     Organization,
     Staff,
     User,
     UserRole,
     Volunteer,
 )
+from app.moderation import log_moderation
 from app.schemas import (
     GeoJSONFeature,
     GeoJSONFeatureCollection,
@@ -99,6 +103,94 @@ def _require_staff(user: User) -> Staff:
             detail="Доступно только для сотрудников ООПТ.",
         )
     return user.staff
+
+
+# ═══════════════════════════════════════════════════════════
+# Лента «Мои точки»: курсор и уведомление о вердикте
+# ═══════════════════════════════════════════════════════════
+
+
+def encode_hypothesis_cursor(created_at: datetime, hypothesis_id: uuid.UUID) -> str:
+    """Непрозрачный курсор: created_at + id, чтобы страница не плыла."""
+    raw = f"{created_at.isoformat()}|{hypothesis_id}".encode()
+    return base64.urlsafe_b64encode(raw).decode().rstrip("=")
+
+
+def decode_hypothesis_cursor(cursor: str) -> tuple[datetime, uuid.UUID]:
+    """Разбирает курсор или отвечает 400: битый курсор — не 500."""
+    padded = cursor + "=" * (-len(cursor) % 4)
+    try:
+        raw = base64.urlsafe_b64decode(padded.encode()).decode()
+        stamp, raw_id = raw.split("|", 1)
+        created_at = datetime.fromisoformat(stamp)
+        if created_at.tzinfo is None:
+            created_at = created_at.replace(tzinfo=UTC)
+        return created_at, uuid.UUID(raw_id)
+    except (ValueError, UnicodeDecodeError) as error:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid cursor.",
+        ) from error
+
+
+_STATUS_NOTICE: dict[HypothesisStatus, tuple[str, str]] = {
+    HypothesisStatus.approved: (
+        "Точка принята",
+        "ООПТ подтвердила находку и готовит выезд на уборку.",
+    ),
+    HypothesisStatus.rejected: (
+        "Точка отклонена",
+        "ООПТ не приняла точку. Причину смотрите в ленте «Мои точки».",
+    ),
+    HypothesisStatus.drone_requested: (
+        "По точке запрошена аэросъёмка",
+        "Сотрудник ООПТ запросил аэросъёмку этой находки.",
+    ),
+    HypothesisStatus.cleaned: (
+        "Точка убрана",
+        "Мусор с вашей точки вывезен — спасибо, что отметили место.",
+    ),
+}
+
+
+def notify_point_status_changed(
+    session: AsyncSession,
+    *,
+    author_id: uuid.UUID | None,
+    hypothesis_id: uuid.UUID,
+    new_status: HypothesisStatus,
+    reject_reason: str | None = None,
+) -> None:
+    """In-app уведомление автору точки.
+
+    Аналитическое `point_validated` само по себе колокольчик не звонит:
+    волонтёр увидел бы вердикт, только если сам открыл ленту. Тип
+    `point_validated` в enum как раз для этого письма в колокольчик.
+
+    author_id пуст после удаления аккаунта — писать некуда и некому.
+    """
+    if author_id is None:
+        return
+    title, default_body = _STATUS_NOTICE.get(
+        new_status,
+        ("Статус точки изменился", "Откройте ленту «Мои точки», чтобы увидеть вердикт."),
+    )
+    body = (
+        reject_reason if new_status == HypothesisStatus.rejected and reject_reason else default_body
+    )
+    session.add(
+        Notification(
+            user_id=author_id,
+            kind=NotificationKind.point_validated,
+            title=title,
+            body=body,
+            action_url="/hypotheses/my",
+            payload={
+                "hypothesis_id": str(hypothesis_id),
+                "status": new_status.value,
+            },
+        )
+    )
 
 
 # ═══════════════════════════════════════════════════════════
@@ -487,6 +579,7 @@ async def validate_hypothesis(
     # because `updated_at` is about to be overwritten by this very update.
     time_to_validate = (datetime.now(UTC) - hypothesis.created_at).total_seconds()
 
+    previous_status = hypothesis.status
     # Update status
     hypothesis.status = body.status
     # Причина хранится только у отказа: у одобрения её нет, а оставлять
@@ -496,6 +589,14 @@ async def validate_hypothesis(
         body.reason.strip() if body.status == HypothesisStatus.rejected and body.reason else None
     )
     await session.flush()
+
+    log_moderation(
+        session,
+        actor_id=user.id,
+        entity_id=hypothesis.id,
+        action=body.status.value,
+        reason=hypothesis.reject_reason,
+    )
 
     await emit(
         session,
@@ -511,6 +612,15 @@ async def validate_hypothesis(
             "time_to_validate": time_to_validate,
         },
     )
+
+    if previous_status != body.status:
+        notify_point_status_changed(
+            session,
+            author_id=hypothesis.author_id,
+            hypothesis_id=hypothesis.id,
+            new_status=body.status,
+            reject_reason=hypothesis.reject_reason,
+        )
 
     # Business rule: if approved → auto-create an Event
     event_id: uuid.UUID | None = None
@@ -560,8 +670,11 @@ async def list_my_hypotheses(
         alias="status",
         description="Фильтр по статусу точки",
     ),
-    limit: int = Query(default=20, ge=1, le=100),
-    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=20, ge=1, le=500),
+    cursor: str | None = Query(
+        default=None,
+        description="Курсор следующей страницы из предыдущего ответа",
+    ),
 ):
     """Личная лента автора точек.
 
@@ -570,29 +683,42 @@ async def list_my_hypotheses(
     причиной: молчаливый отказ — главная причина, по которой волонтёр не
     присылает вторую точку.
 
-    Offset-пагинация, а не курсор: лента своя, короткая и отсортирована по
-    дате создания, которая не меняется — сдвига страниц, из-за которого
-    курсоры и нужны, здесь не возникает.
+    Курсор по (created_at, id), а не offset: между запросами точке могут
+    отказать или закрыть мероприятие, и сдвиг «на 20» пропустил бы строку.
     """
     _require_volunteer(user)
 
     filters = [Hypothesis.author_id == user.id]
     if status_filter is not None:
         filters.append(Hypothesis.status == status_filter)
+    if cursor:
+        cursor_at, cursor_id = decode_hypothesis_cursor(cursor)
+        # Лента новее → старше: следующая страница строго «левее» курсора.
+        filters.append(tuple_(Hypothesis.created_at, Hypothesis.id) < (cursor_at, cursor_id))
 
     query = (
         select(Hypothesis)
         .where(*filters)
-        .order_by(Hypothesis.created_at.desc())
-        .limit(limit)
-        .offset(offset)
+        .order_by(Hypothesis.created_at.desc(), Hypothesis.id.desc())
+        .limit(limit + 1)
     )
     result = await session.execute(query)
     # unique(): Hypothesis.event и author подтягиваются joined-загрузкой,
     # из-за join строки дублируются на уровне курсора.
-    rows = result.unique().scalars().all()
+    rows = list(result.unique().scalars().all())
 
-    total = await session.scalar(select(func.count()).select_from(Hypothesis).where(*filters))
+    next_cursor: str | None = None
+    if len(rows) > limit:
+        last = rows[limit - 1]
+        next_cursor = encode_hypothesis_cursor(last.created_at, last.id)
+        rows = rows[:limit]
+
+    # total — по всей ленте (с фильтром статуса), без курсора: клиенту
+    # нужно «у вас 47 точек», а не «на этой странице ещё сколько-то».
+    total_filters = [Hypothesis.author_id == user.id]
+    if status_filter is not None:
+        total_filters.append(Hypothesis.status == status_filter)
+    total = await session.scalar(select(func.count()).select_from(Hypothesis).where(*total_filters))
 
     items: list[MyHypothesisOut] = []
     for hypothesis in rows:
@@ -609,7 +735,7 @@ async def list_my_hypotheses(
         items=items,
         total=total or 0,
         limit=limit,
-        offset=offset,
+        next_cursor=next_cursor,
     )
 
 

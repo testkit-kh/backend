@@ -36,6 +36,9 @@ class EventType(str, enum.Enum):
     point_created = "point_created"
     cleanup_event_joined = "cleanup_event_joined"
     cleanup_event_completed = "cleanup_event_completed"
+    #: Приёмка фото «до/после»: доказательство, что уборка состоялась.
+    #: Третье содержательное событие для kpi.retention_30d.
+    cleanup_event_before_after = "cleanup_event_before_after"
 
     # ---- ООПТ journey -----------------------------------------------------
     oopt_registered = "oopt_registered"

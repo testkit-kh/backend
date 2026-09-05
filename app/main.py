@@ -22,12 +22,21 @@ from app.course import router as course_router
 from app.database import engine
 from app.events import router as events_router
 from app.hypotheses import router as hypotheses_router
+from app.logging_config import configure_logging
 from app.monitoring import router as monitoring_router
 from app.notifications import router as notifications_router
 from app.organizations import router as organizations_router
 from app.parcels import router as parcels_router
+from app.public import router as public_router
 from app.registry.router import router as registry_router
 from app.scheduler import shutdown_scheduler, start_scheduler
+from app.uploads import router as uploads_router
+from app.users import router as users_router
+from app.volunteers import router as volunteers_router
+
+# До первого обращения к rosreestr2coord: иначе корневой логгер заберёт она.
+# Подробности — в app/logging_config.py.
+configure_logging()
 
 
 @asynccontextmanager
@@ -70,6 +79,10 @@ app.include_router(parcels_router)
 app.include_router(registry_router)
 app.include_router(analytics_router)
 app.include_router(organizations_router)
+app.include_router(public_router)
+app.include_router(users_router)
+app.include_router(volunteers_router)
+app.include_router(uploads_router)
 
 
 @app.get("/", tags=["health"])

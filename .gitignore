@@ -6,3 +6,6 @@ __pycache__/
 
 # rosreestr2coord пишет свой лог в рабочую директорию
 debug.log
+
+# Выгрузка Overpass (fetch_borders.py) — большие полигоны, в git не кладём
+data/borders/*.geojson

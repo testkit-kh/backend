@@ -89,6 +89,20 @@ class ConsentStatus(str, enum.Enum):
     rejected = "rejected"
 
 
+class EducationLevel(str, enum.Enum):
+    """Ступень, с которой человек пришёл в проект.
+
+    Школы и колледжи — приоритетный сегмент: от учреждения считаются
+    групповые выезды и отчёт «сколько школ участвует».
+    """
+
+    school = "school"
+    college = "college"
+    university = "university"
+    working = "working"
+    other = "other"
+
+
 class ParcelStatus(str, enum.Enum):
     """Состояние резолвинга кадастрового участка в геометрию."""
 
@@ -167,8 +181,14 @@ class User(Base):
         uselist=False,
         lazy="joined",
         foreign_keys="Volunteer.user_id",
+        cascade="all, delete-orphan",
     )
-    staff: Mapped[Staff | None] = relationship(back_populates="user", uselist=False, lazy="joined")
+    staff: Mapped[Staff | None] = relationship(
+        back_populates="user",
+        uselist=False,
+        lazy="joined",
+        cascade="all, delete-orphan",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -229,6 +249,51 @@ class Volunteer(Base):
     )
 
     user: Mapped[User] = relationship(back_populates="volunteer", foreign_keys=[user_id])
+    education: Mapped[VolunteerEducation | None] = relationship(
+        back_populates="volunteer",
+        uselist=False,
+    )
+
+
+class VolunteerEducation(Base):
+    """Анкета об образовании. Одна на волонтёра: повторный POST обновляет её.
+
+    Учреждение резолвится по ИНН той же цепочкой, что и регистрация ООПТ
+    (`lookup_company`). Имя из ЕГРЮЛ кладётся в registry_name, введённое
+    руками — в institution_name: они могут расходиться, и это нормально.
+    """
+
+    __tablename__ = "volunteer_education"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    volunteer_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("volunteers.id", ondelete="CASCADE"),
+        unique=True,
+        nullable=False,
+    )
+    level: Mapped[EducationLevel] = mapped_column(
+        SAEnum(EducationLevel, name="education_level"),
+        nullable=False,
+    )
+    institution_name: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    institution_inn: Mapped[str | None] = mapped_column(String(12), nullable=True)
+    #: Каноническое наименование из ЕГРЮЛ, если ИНН резолвился.
+    registry_name: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    grade: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    city: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(UTC),
+        onupdate=lambda: datetime.now(UTC),
+        nullable=False,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(UTC),
+        nullable=False,
+    )
+
+    volunteer: Mapped[Volunteer] = relationship(back_populates="education")
 
 
 # ---------------------------------------------------------------------------
@@ -251,11 +316,16 @@ class Organization(Base):
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     # Native PostGIS polygon — SRID 4326 (WGS-84, lon/lat).
-    # Requires CREATE EXTENSION postgis; in the database.
+    # MultiPolygon: ООПТ из нескольких кластеров — норма, а OSM и
+    # объединение кадастровых участков оба отдают мультиполигон.
     territory_geom = mapped_column(
-        Geometry(geometry_type="POLYGON", srid=4326, spatial_index=True),
+        Geometry(geometry_type="MULTIPOLYGON", srid=4326, spatial_index=True),
         nullable=True,
     )
+    #: osm — ориентир из OpenStreetMap; egrn — объединение участков ЕГРН.
+    #: В интерфейсе граница «osm» помечается как ориентир, не документ.
+    territory_source: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    territory_osm_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
     verification_status: Mapped[OrgVerificationStatus] = mapped_column(
         SAEnum(
@@ -302,6 +372,114 @@ class Staff(Base):
     organization: Mapped[Organization] = relationship(back_populates="staff_members", lazy="joined")
 
 
+class StaffInvite(Base):
+    """Одноразовый код для присоединения сотрудника к ООПТ.
+
+    Самостоятельной регистрации сотрудника быть не может: сотрудник видит
+    непроверенные точки и решает их судьбу, поэтому открытая форма означала
+    бы доступ к чужой территории по желанию. Позвать коллегу может только
+    тот, кто уже работает в этой ООПТ, и подтверждается это кодом.
+
+    Код хранится открытым текстом, в отличие от refresh-токена: по нему идёт
+    поиск, он живёт трое суток, одноразовый и сам по себе доступа не даёт —
+    нужен ещё пароль, который придумает приглашённый.
+    """
+
+    __tablename__ = "staff_invites"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    code: Mapped[str] = mapped_column(String(64), unique=True, nullable=False, index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    #: NULL — код ещё не использован. Использованные не удаляем и флагом не
+    #: заменяем: «кто и когда вошёл по этому коду» — первое, что спрашивают,
+    #: когда в ООПТ обнаруживается лишний аккаунт.
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    #: Кто выдал код и кто им воспользовался. SET NULL: сотрудник может
+    #: уйти, а выданный им доступ остаться — и тогда важно, что запись о
+    #: выдаче не исчезла вместе с ним.
+    created_by_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    used_by_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
+    )
+
+    # relationship к organization здесь намеренно нет. Инвайт выбирается
+    # через SELECT ... FOR UPDATE (защита от гонки за одноразовым кодом), а
+    # joined-загрузка превратила бы запрос в LEFT OUTER JOIN — PostgreSQL
+    # отказывается блокировать nullable-сторону внешнего соединения.
+    # Организация читается отдельным session.get по organization_id.
+
+    __table_args__ = (
+        # «Какие коды этой ООПТ ещё не использованы» — единственный частый
+        # запрос по таблице помимо поиска по самому коду.
+        Index("ix_staff_invites_org_used", "organization_id", "used_at"),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Refresh-токены — долгие сессии, которые можно отозвать
+# ---------------------------------------------------------------------------
+
+
+class RefreshToken(Base):
+    """Выданный refresh-токен.
+
+    Хранится только SHA-256 от токена: утечка дампа БД не должна означать
+    утечку живых сессий, а по хэшу восстановить токен нельзя.
+
+    Почему SHA-256, а не bcrypt, которым хэшируются пароли. Во-первых,
+    refresh-токен — это 48 случайных байт от CSPRNG, а не выбранное
+    человеком слово; подбирать его бессмысленно, и замедляющая функция
+    ничего не добавляет. Во-вторых, по токену нужен поиск, а bcrypt со своей
+    солью даёт разный хэш для одного и того же значения — индексный lookup
+    по нему невозможен в принципе.
+
+    Отозванные записи не удаляются: повторный приход по отозванному токену —
+    признак кражи, а у удалённой строки такой приход не отличить от
+    опечатки.
+    """
+
+    __tablename__ = "refresh_tokens"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    #: SHA-256 в hex — ровно 64 символа.
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, nullable=False, index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    #: Устройство, которому выдали токен: нужно, чтобы человек в списке
+    #: сессий узнал свои входы и заметил чужой.
+    user_agent: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
+    )
+
+    # Как и у StaffInvite, relationship отсутствует не по забывчивости:
+    # токен выбирается под FOR UPDATE, а joined-загрузка сделала бы такой
+    # запрос невыполнимым. Пользователь читается session.get по user_id.
+
+    __table_args__ = (
+        # Частичный индекс под массовый отзыв при обнаружении кражи: нужны
+        # только активные токены пользователя, а отозванных со временем
+        # становится больше, и в этот индекс они не попадают.
+        Index(
+            "ix_refresh_tokens_user_active",
+            "user_id",
+            postgresql_where=revoked_at.is_(None),
+        ),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Hypotheses (экологические наблюдения волонтёров)
 # ---------------------------------------------------------------------------
@@ -311,9 +489,11 @@ class Hypothesis(Base):
     __tablename__ = "hypotheses"
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
-    author_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("users.id", ondelete="CASCADE"),
-        nullable=False,
+    #: Nullable + ON DELETE SET NULL: удаление аккаунта (152-ФЗ) не должно
+    #: уносить точку. Карта и KPI живут без автора, персональные данные — нет.
+    author_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
         index=True,
     )
     organization_id: Mapped[uuid.UUID | None] = mapped_column(
@@ -466,7 +646,7 @@ class Hypothesis(Base):
         nullable=False,
     )
 
-    author: Mapped[User] = relationship(
+    author: Mapped[User | None] = relationship(
         foreign_keys=[author_id],
         lazy="joined",
     )
@@ -569,6 +749,24 @@ class Event(Base):
         nullable=True,
     )
 
+    # ---- Приёмка «до/после» ----
+    # Снимок «до» часто уже есть на гипотезе (photo_url). Здесь хранится
+    # пара, которую сотрудник ООПТ принял как доказательство уборки —
+    # отдельно от итогов, потому что цифры «сколько вывезли» и фото
+    # «было/стало» приходят в разное время и проверяются по-разному.
+    photo_before_urls: Mapped[list[str] | None] = mapped_column(
+        ARRAY(String(2048)),
+        nullable=True,
+    )
+    photo_after_urls: Mapped[list[str] | None] = mapped_column(
+        ARRAY(String(2048)),
+        nullable=True,
+    )
+    before_after_accepted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=lambda: datetime.now(UTC),
@@ -606,9 +804,11 @@ class EventParticipant(Base):
         nullable=False,
         index=True,
     )
-    user_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("users.id", ondelete="CASCADE"),
-        nullable=False,
+    #: SET NULL, не CASCADE: явка — факт мероприятия, а не персональные
+    #: данные. После удаления аккаунта строка остаётся, волонтёра в ней нет.
+    user_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
         index=True,
     )
     joined_at: Mapped[datetime] = mapped_column(
@@ -625,7 +825,7 @@ class EventParticipant(Base):
     )
 
     event: Mapped[Event] = relationship(back_populates="participants")
-    user: Mapped[User] = relationship(lazy="joined")
+    user: Mapped[User | None] = relationship(lazy="joined")
 
     __table_args__ = (
         # Идемпотентность записи на уровне БД: повторный POST /join не
@@ -726,7 +926,12 @@ class MonitoringSite(Base):
         nullable=False,
     )
 
-    organization: Mapped[Organization] = relationship(lazy="joined")
+    #: Здесь, в отличие от остальных связей, намеренно без lazy="joined":
+    #: список площадок считает замеры агрегатом с GROUP BY monitoring_sites.id,
+    #: а неявный LEFT JOIN подмешал бы в выборку колонки organizations —
+    #: PostgreSQL такую группировку отвергает. Ни один код эту связь не читает;
+    #: понадобится — грузить selectinload явно.
+    organization: Mapped[Organization] = relationship()
     surveys: Mapped[list[SiteSurvey]] = relationship(
         back_populates="site", order_by="SiteSurvey.surveyed_at"
     )
@@ -968,4 +1173,37 @@ class CadastralParcel(Base):
     __table_args__ = (
         Index("idx_cadastral_parcels_geom", "geom", postgresql_using="gist"),
         Index("ix_cadastral_parcels_status", "status"),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Moderation log — неизменяемый журнал вердиктов
+# ---------------------------------------------------------------------------
+
+
+class ModerationLog(Base):
+    """Запись о модерации гипотезы или мероприятия.
+
+    Append-only: спор «кто и почему отклонил точку» иначе не разрешить.
+    Обновлений и удалений нет ни в коде, ни в БД (триггер в миграции 0013).
+    actor_id SET NULL: удаление модератора не должно стирать журнал.
+    entity_id без FK: гипотезу или мероприятие могут удалить, запись спора
+    обязана остаться.
+    """
+
+    __tablename__ = "moderation_log"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    actor_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    entity_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False, index=True)
+    action: Mapped[str] = mapped_column(String(64), nullable=False)
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(UTC),
+        nullable=False,
     )

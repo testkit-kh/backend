@@ -7,10 +7,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import re
+import tempfile
 from dataclasses import dataclass
 
 from app.config import settings
+from app.logging_config import configure_logging
 
 logger = logging.getLogger(__name__)
 
@@ -56,8 +59,25 @@ def _to_multipolygon(geometry: dict) -> dict:
     return geometry
 
 
+def _media_path() -> str:
+    """Каталог, в который библиотеке разрешено писать.
+
+    `Area.__init__` безусловно делает makedirs(media_path/tmp), а media_path по
+    умолчанию — os.getcwd(). В контейнере это /app под root, и резолвинг падает
+    с PermissionError ещё до первого запроса в ФГИС.
+    """
+    path = settings.ROSREESTR_TMP_DIR or os.path.join(tempfile.gettempdir(), "rosreestr2coord")
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
 def _resolve_blocking(cadastral_number: str) -> dict:
     """Синхронный вызов библиотеки. Выполняется в отдельном потоке."""
+    # Строкой раньше импорта: на импорте библиотека открывает debug.log в
+    # рабочей директории, если корневой логгер ещё не настроен. См.
+    # app/logging_config.py.
+    configure_logging()
+
     # Импорт внутри функции: пакет тянет тяжёлые зависимости и сетевые
     # обёртки, а нужен только в фоновой задаче.
     from rosreestr2coord.parser import Area
@@ -67,6 +87,7 @@ def _resolve_blocking(cadastral_number: str) -> dict:
         coord_out="EPSG:4326",
         with_log=False,
         use_cache=True,
+        media_path=_media_path(),
         # По умолчанию библиотека ждёт 5 секунд — для ФГИС ЕГРН этого не
         # хватает почти никогда. Свой таймаут снаружи всё равно жёстче.
         timeout=HTTP_TIMEOUT_SECONDS,

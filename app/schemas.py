@@ -22,6 +22,7 @@ from app.cleanup_cost import AccessType, TrashCategory, TrashFraction
 from app.models import (
     CertificateStatus,
     ConsentStatus,
+    EducationLevel,
     EventStatus,
     HypothesisStatus,
     NotificationKind,
@@ -71,6 +72,45 @@ class OrganizationRegisterRequest(BaseModel):
     full_name: str = Field(min_length=1, max_length=256)
 
 
+class CoordinatorRegisterRequest(BaseModel):
+    """Регистрация координатора программы.
+
+    Открытой быть не может: координатор видит все сертификаты и согласия.
+    Код берётся из COORDINATOR_INVITE_CODE, не из таблицы инвайтов ООПТ.
+    """
+
+    invite_code: str = Field(min_length=8, max_length=128)
+    email: EmailStr
+    password: str = Field(min_length=8, max_length=128)
+    full_name: str = Field(min_length=1, max_length=256)
+
+
+class StaffRegisterRequest(BaseModel):
+    """Регистрация сотрудника по инвайту (P1-6).
+
+    Организация не передаётся: она берётся из инвайта. Иначе приглашённый
+    подставил бы чужую ООПТ, и код превратился бы из пропуска в одну
+    организацию в пропуск в любую.
+    """
+
+    invite_code: str = Field(
+        min_length=8,
+        max_length=64,
+        description="Одноразовый код, выданный сотрудником ООПТ",
+    )
+    email: EmailStr
+    password: str = Field(min_length=8, max_length=128)
+    full_name: str = Field(min_length=1, max_length=256)
+
+    @field_validator("invite_code")
+    @classmethod
+    def _normalize_code(cls, value: str) -> str:
+        """Код диктуют голосом и пересылают в мессенджере: регистр и
+        обрамляющие пробелы к его смыслу отношения не имеют.
+        """
+        return value.strip().upper()
+
+
 class LoginRequest(BaseModel):
     """Mirrors OAuth2PasswordRequestForm for JSON body fallback."""
 
@@ -86,6 +126,12 @@ class LoginRequest(BaseModel):
 class TokenResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
+    #: Сколько секунд жить access-токену. Клиент должен обновляться заранее,
+    #: а не ловить первый 401 — иначе каждый цикл обновления стоит
+    #: пользователю одного упавшего запроса.
+    #: Сам refresh-токен в теле не возвращается никогда: только httpOnly-
+    #: кукой, недоступной JavaScript.
+    expires_in: int | None = None
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -110,6 +156,10 @@ class VolunteerProfile(UserBase):
     consent_status: ConsentStatus = ConsentStatus.not_required
     certificate_status: CertificateStatus = CertificateStatus.none
     certificate_url: str | None = None
+    #: Последнее поданное согласие. None — документ ещё не отправляли,
+    #: даже если consent_status=awaiting (так бывает сразу после регистрации
+    #: несовершеннолетнего). Без этого поля фронт путает «нужно» и «подано».
+    latest_consent: ParentalConsentOut | None = None
 
 
 class OrganizationOut(BaseModel):
@@ -121,6 +171,9 @@ class OrganizationOut(BaseModel):
     cadastral_number: str | None
     verification_status: OrgVerificationStatus
     created_at: datetime
+    territory_source: str | None = None
+    territory_osm_id: str | None = None
+    has_territory: bool = False
 
 
 class StaffProfile(UserBase):
@@ -172,6 +225,9 @@ class OrganizationProfileOut(BaseModel):
     contact_email: str | None = None
     contact_phone: str | None = None
     description: str | None = None
+    territory_source: str | None = None
+    territory_osm_id: str | None = None
+    has_territory: bool = False
 
     staff_members: list[StaffMemberOut] = Field(default_factory=list)
     parcels_count: int = 0
@@ -188,6 +244,23 @@ class OrganizationUpdateRequest(BaseModel):
     contact_email: EmailStr | None = None
     contact_phone: str | None = Field(default=None, max_length=32)
     description: str | None = Field(default=None, max_length=4096)
+
+
+class StaffInviteOut(BaseModel):
+    """Ответ на выдачу инвайта.
+
+    Код возвращается ровно один раз — в этом ответе. Ручки «покажи код ещё
+    раз» нет намеренно: код и есть пропуск, и чем меньше мест, где его можно
+    прочитать, тем лучше.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    code: str
+    organization_id: uuid.UUID
+    expires_at: datetime
+    created_at: datetime
 
 
 class OrganizationListItemOut(BaseModel):
@@ -427,7 +500,7 @@ class HypothesisOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: uuid.UUID
-    author_id: uuid.UUID
+    author_id: uuid.UUID | None
     organization_id: uuid.UUID | None
     lat: float
     lon: float
@@ -501,14 +574,16 @@ class MyHypothesisOut(BaseModel):
 class MyHypothesesListOut(BaseModel):
     """Страница ленты.
 
-    `total` считается отдельным запросом: с limit длина items ничего не
-    говорит о размере ленты, а клиенту нужно знать, есть ли что листать.
+    Курсор, а не offset: между страницами волонтёру могут отказать в точке
+    или закрыть мероприятие, и сдвиг «на 20» пропустил бы строку или
+    показал её дважды. `total` считается отдельно — длина items про размер
+    ленты ничего не говорит.
     """
 
     items: list[MyHypothesisOut]
     total: int
     limit: int
-    offset: int
+    next_cursor: str | None = None
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -543,6 +618,11 @@ class EventOut(BaseModel):
 
     created_at: datetime
     updated_at: datetime
+
+    # ---- Приёмка «до/после» ----
+    photo_before_urls: list[str] | None = None
+    photo_after_urls: list[str] | None = None
+    before_after_accepted_at: datetime | None = None
 
 
 class EventListOut(BaseModel):
@@ -650,11 +730,45 @@ class EventCompleteResponse(BaseModel):
     attendance_marked: int = 0
 
 
+class EventBeforeAfterRequest(BaseModel):
+    """Приёмка фотографий «до» и «после» уборки.
+
+    Хотя бы одно фото «после» обязательно: без него принимать нечего.
+    «До» можно не слать — тогда берётся photo_url гипотезы, ради которой
+    мероприятие создали.
+    """
+
+    photo_before_urls: list[str] = Field(default_factory=list, max_length=20)
+    photo_after_urls: list[str] = Field(min_length=1, max_length=20)
+
+    @field_validator("photo_before_urls", "photo_after_urls")
+    @classmethod
+    def _urls(cls, value: list[str]) -> list[str]:
+        cleaned = [item.strip() for item in value if item and item.strip()]
+        for item in cleaned:
+            if len(item) > 2048:
+                raise ValueError("photo URL must be at most 2048 characters")
+        return cleaned
+
+    @model_validator(mode="after")
+    def _after_required(self) -> EventBeforeAfterRequest:
+        if not self.photo_after_urls:
+            raise ValueError("at least one after photo is required")
+        return self
+
+
+class EventBeforeAfterOut(BaseModel):
+    event: EventOut
+    #: True, если приёмка уже была: повтор не переписывает фото и не
+    #: эмитит второе событие.
+    already_accepted: bool = False
+
+
 class EventJoinOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     event_id: uuid.UUID
-    user_id: uuid.UUID
+    user_id: uuid.UUID | None
     joined_at: datetime
     attended: bool
     #: True, если запись уже существовала. Вместе с кодом 200 (а не 201)
@@ -1032,3 +1146,93 @@ class AnalyticsSummaryOut(BaseModel):
     confirmed_volume_m3: float
     confirmed_cleanup_cost_rub: float
     certificate_status: CertificateStatus
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Education, territory, uploads
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class EducationRequest(BaseModel):
+    level: EducationLevel
+    institution_name: str | None = Field(default=None, max_length=512)
+    institution_inn: str | None = Field(default=None, max_length=12)
+    grade: str | None = Field(default=None, max_length=32)
+    city: str | None = Field(default=None, max_length=128)
+
+    @field_validator("institution_name", "grade", "city")
+    @classmethod
+    def _blank_to_none(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        stripped = value.strip()
+        return stripped or None
+
+    @field_validator("institution_inn")
+    @classmethod
+    def _digits_inn(cls, value: str | None) -> str | None:
+        if value is None or not value.strip():
+            return None
+        return "".join(ch for ch in value if ch.isdigit())
+
+
+class EducationOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    level: EducationLevel
+    institution_name: str | None
+    institution_inn: str | None
+    registry_name: str | None = None
+    grade: str | None
+    city: str | None
+    updated_at: datetime
+
+
+class TerritoryUpdateRequest(BaseModel):
+    """Границы ООПТ без кадастра — полигон из OSM, который фронт уже держит."""
+
+    source: str = Field(min_length=1, max_length=32)
+    osm_id: str | None = Field(default=None, max_length=64)
+    name: str | None = Field(default=None, max_length=512)
+    geometry: GeoJSONGeometry
+
+    @field_validator("source")
+    @classmethod
+    def _known_source(cls, value: str) -> str:
+        normalized = value.strip().lower()
+        if normalized not in {"osm", "manual"}:
+            raise ValueError("source must be 'osm' or 'manual'")
+        return normalized
+
+    @field_validator("geometry")
+    @classmethod
+    def _polygonal(cls, value: GeoJSONGeometry) -> GeoJSONGeometry:
+        if value.type not in {"Polygon", "MultiPolygon"}:
+            raise ValueError("Territory geometry must be a Polygon or MultiPolygon.")
+        return value
+
+
+class TerritoryOut(BaseModel):
+    organization_id: uuid.UUID
+    source: str
+    osm_id: str | None
+    name: str | None
+    has_territory: bool
+
+
+class UploadPresignRequest(BaseModel):
+    filename: str = Field(min_length=1, max_length=255)
+    content_type: str = Field(min_length=3, max_length=128)
+    purpose: str = Field(default="hypothesis_photo", max_length=64)
+
+
+class UploadPresignOut(BaseModel):
+    method: str = "PUT"
+    upload_url: str
+    public_url: str
+    headers: dict[str, str]
+    expires_in: int
+    key: str
+
+
+VolunteerProfile.model_rebuild()

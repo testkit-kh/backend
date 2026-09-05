@@ -24,7 +24,7 @@ from app.age import has_field_access
 from app.analytics import EventType, emit
 from app.auth import get_current_user
 from app.database import get_session
-from app.hypotheses import _require_staff, _require_volunteer
+from app.hypotheses import _require_staff, _require_volunteer, notify_point_status_changed
 from app.models import (
     CertificateStatus,
     Event,
@@ -36,7 +36,10 @@ from app.models import (
     User,
     UserRole,
 )
+from app.moderation import log_moderation
 from app.schemas import (
+    EventBeforeAfterOut,
+    EventBeforeAfterRequest,
     EventCompleteRequest,
     EventCompleteResponse,
     EventJoinOut,
@@ -462,9 +465,26 @@ async def complete_event(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Гипотеза, привязанная к мероприятию, не найдена.",
         )
+    previous_status = hypothesis.status
     hypothesis.status = HypothesisStatus.cleaned
 
     await session.flush()
+
+    if previous_status != HypothesisStatus.cleaned:
+        notify_point_status_changed(
+            session,
+            author_id=hypothesis.author_id,
+            hypothesis_id=hypothesis.id,
+            new_status=HypothesisStatus.cleaned,
+        )
+
+    log_moderation(
+        session,
+        actor_id=user.id,
+        entity_id=event.id,
+        action="completed",
+        reason=body.result_notes,
+    )
 
     registered = await session.scalar(
         select(func.count(EventParticipant.id)).where(EventParticipant.event_id == event.id)
@@ -504,3 +524,93 @@ async def complete_event(
         hypothesis_status=hypothesis.status,
         attendance_marked=attendance_marked,
     )
+
+
+# ═══════════════════════════════════════════════════════════
+# 6. POST /api/v1/events/{id}/before-after
+# ═══════════════════════════════════════════════════════════
+
+
+@router.post(
+    "/{event_id}/before-after",
+    response_model=EventBeforeAfterOut,
+    status_code=status.HTTP_201_CREATED,
+    summary="Принять фото «до/после» уборки (сотрудник ООПТ)",
+)
+async def accept_before_after(
+    event_id: uuid.UUID,
+    body: EventBeforeAfterRequest,
+    response: Response,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    """Приёмка доказательств уборки.
+
+    Отдельная ручка, а не поле в complete: цифры «сколько вывезли» и фото
+    «было/стало» приходят в разное время. Повтор не переписывает уже
+    принятую пару — иначе отчётность по доказательствам плыла бы.
+    """
+    staff = _require_staff(user)
+    event = await _get_event_for_staff(session, event_id, staff)
+
+    if event.status == EventStatus.cancelled:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Отменённое мероприятие нельзя принимать.",
+        )
+    if event.status != EventStatus.completed:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Приёмка «до/после» возможна после закрытия мероприятия.",
+        )
+
+    if event.before_after_accepted_at is not None:
+        response.status_code = status.HTTP_200_OK
+        return EventBeforeAfterOut(
+            event=await _to_event_out(session, event),
+            already_accepted=True,
+        )
+
+    before = list(body.photo_before_urls)
+    if not before:
+        hypothesis = await session.scalar(
+            select(Hypothesis).where(Hypothesis.id == event.hypothesis_id)
+        )
+        if hypothesis is not None and hypothesis.photo_url:
+            before = [hypothesis.photo_url]
+    if not before:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "Нужна хотя бы одна фотография «до»: приложите снимок "
+                "или у точки должен быть photo_url."
+            ),
+        )
+
+    now = datetime.now(UTC)
+    event.photo_before_urls = before
+    event.photo_after_urls = list(body.photo_after_urls)
+    event.before_after_accepted_at = now
+    await session.flush()
+
+    log_moderation(
+        session,
+        actor_id=user.id,
+        entity_id=event.id,
+        action="before_after_accepted",
+    )
+
+    await emit(
+        session,
+        EventType.cleanup_event_before_after,
+        user_id=user.id,
+        payload={
+            "event_id": str(event.id),
+            "hypothesis_id": str(event.hypothesis_id),
+            "organization_id": str(event.organization_id),
+            "before_count": len(before),
+            "after_count": len(event.photo_after_urls or []),
+        },
+    )
+
+    return EventBeforeAfterOut(event=await _to_event_out(session, event))

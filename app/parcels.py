@@ -125,6 +125,8 @@ async def _rebuild_territory(session: AsyncSession, organization_id: uuid.UUID) 
         # Объединение участков почти всегда многоконтурное, поэтому колонка
         # territory_geom расширена до MULTIPOLYGON миграцией 0005.
         organization.territory_geom = func.ST_Multi(union)
+        organization.territory_source = "egrn"
+        organization.territory_osm_id = None
 
 
 # ═══════════════════════════════════════════════════════════════════════════
