@@ -36,6 +36,7 @@ TIMEOUT = 60.0
 # Что именно собираем
 # ---------------------------------------------------------------------------
 
+
 @dataclass(frozen=True)
 class Card:
     name: str
@@ -77,7 +78,7 @@ FUNNEL_CARDS = [
         description="Сколько подано, принято, отклонено и сколько ждут очереди",
         display="bar",
         sql="SELECT week, approved, rejected, awaiting_review FROM kpi.course_completion"
-            " ORDER BY week",
+        " ORDER BY week",
     ),
     Card(
         name="Активация после обучения",
@@ -102,11 +103,11 @@ OOPT_CARDS = [
         display="table",
         template_tags=ORG_TAG,
         sql="SELECT organization_name, points_received, points_validated, queue_size,"
-            " approved, rejected, drone_requested, is_active"
-            " FROM kpi.oopt_engagement"
-            " WHERE {{organization_id}} IS NULL"
-            "    OR organization_id::text = {{organization_id}}"
-            " ORDER BY queue_size DESC",
+        " approved, rejected, drone_requested, is_active"
+        " FROM kpi.oopt_engagement"
+        " WHERE {{organization_id}} IS NULL"
+        "    OR organization_id::text = {{organization_id}}"
+        " ORDER BY queue_size DESC",
     ),
     Card(
         name="Время до вердикта",
@@ -114,10 +115,10 @@ OOPT_CARDS = [
         display="table",
         template_tags=ORG_TAG,
         sql="SELECT week, validated, avg_hours, median_hours, max_hours"
-            " FROM kpi.validation_time"
-            " WHERE {{organization_id}} IS NULL"
-            "    OR organization_id::text = {{organization_id}}"
-            " ORDER BY week DESC",
+        " FROM kpi.validation_time"
+        " WHERE {{organization_id}} IS NULL"
+        "    OR organization_id::text = {{organization_id}}"
+        " ORDER BY week DESC",
     ),
     Card(
         name="Всплески точек (антифрод)",
@@ -133,10 +134,10 @@ IMPACT_CARDS = [
         display="bar",
         template_tags=ORG_TAG,
         sql="SELECT dominant_category, SUM(volume_m3) AS volume_m3, SUM(mass_kg) AS mass_kg"
-            " FROM kpi.trash_found"
-            " WHERE {{organization_id}} IS NULL"
-            "    OR organization_id::text = {{organization_id}}"
-            " GROUP BY 1 ORDER BY 2 DESC NULLS LAST",
+        " FROM kpi.trash_found"
+        " WHERE {{organization_id}} IS NULL"
+        "    OR organization_id::text = {{organization_id}}"
+        " GROUP BY 1 ORDER BY 2 DESC NULLS LAST",
     ),
     Card(
         name="Прогноз затрат на уборку",
@@ -144,10 +145,10 @@ IMPACT_CARDS = [
         display="bar",
         template_tags=ORG_TAG,
         sql="SELECT access_type, SUM(cleanup_cost_rub) AS cost_rub, SUM(points) AS points"
-            " FROM kpi.trash_found"
-            " WHERE {{organization_id}} IS NULL"
-            "    OR organization_id::text = {{organization_id}}"
-            " GROUP BY 1 ORDER BY 2 DESC NULLS LAST",
+        " FROM kpi.trash_found"
+        " WHERE {{organization_id}} IS NULL"
+        "    OR organization_id::text = {{organization_id}}"
+        " GROUP BY 1 ORDER BY 2 DESC NULLS LAST",
     ),
     Card(
         name="Точки без оценки объёма",
@@ -172,6 +173,7 @@ DASHBOARDS = [
 # ---------------------------------------------------------------------------
 # Клиент
 # ---------------------------------------------------------------------------
+
 
 class Metabase:
     def __init__(self, base_url: str, email: str, password: str) -> None:
@@ -327,8 +329,10 @@ if __name__ == "__main__":
     try:
         sys.exit(main())
     except httpx.HTTPStatusError as error:
-        print(f"Metabase ответил {error.response.status_code}: "
-              f"{error.response.text[:400]}", file=sys.stderr)
+        print(
+            f"Metabase ответил {error.response.status_code}: {error.response.text[:400]}",
+            file=sys.stderr,
+        )
         sys.exit(1)
     except httpx.HTTPError as error:
         print(f"Metabase недоступен: {error}", file=sys.stderr)

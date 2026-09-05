@@ -22,34 +22,34 @@ from dataclasses import dataclass
 class TrashCategory(str, enum.Enum):
     """Состав мусора. Список — по методике учёта пляжного мусора проекта."""
 
-    plastic = "plastic"                # пластик, тара, плёнка
-    fishing_gear = "fishing_gear"      # сети, тросы, буи, ярусы
+    plastic = "plastic"  # пластик, тара, плёнка
+    fishing_gear = "fishing_gear"  # сети, тросы, буи, ярусы
     glass = "glass"
-    metal = "metal"                    # бочки, металлолом
-    wood = "wood"                      # обработанная древесина, поддоны
-    rubber = "rubber"                  # покрышки, резина
-    hazardous = "hazardous"            # нефтепродукты, ГСМ, химия
-    household = "household"            # бытовой мусор
-    construction = "construction"      # строительный мусор, грунт
+    metal = "metal"  # бочки, металлолом
+    wood = "wood"  # обработанная древесина, поддоны
+    rubber = "rubber"  # покрышки, резина
+    hazardous = "hazardous"  # нефтепродукты, ГСМ, химия
+    household = "household"  # бытовой мусор
+    construction = "construction"  # строительный мусор, грунт
     other = "other"
 
 
 class TrashFraction(str, enum.Enum):
     """Фракция по общепринятой классификации морского мусора."""
 
-    mega = "mega"      # > 1 м
-    macro = "macro"    # 2.5 см – 1 м
-    meso = "meso"      # 0.5 – 2.5 см
-    micro = "micro"    # < 0.5 см
+    mega = "mega"  # > 1 м
+    macro = "macro"  # 2.5 см – 1 м
+    meso = "meso"  # 0.5 – 2.5 см
+    micro = "micro"  # < 0.5 см
 
 
 class AccessType(str, enum.Enum):
     """Как физически попасть на точку. Главный драйвер стоимости."""
 
-    on_foot = "on_foot"          # пешком от дороги
-    vehicle = "vehicle"          # подъезд транспорта
-    boat = "boat"                # только с воды
-    helicopter = "helicopter"    # только авиацией
+    on_foot = "on_foot"  # пешком от дороги
+    vehicle = "vehicle"  # подъезд транспорта
+    boat = "boat"  # только с воды
+    helicopter = "helicopter"  # только авиацией
 
 
 # ---------------------------------------------------------------------------

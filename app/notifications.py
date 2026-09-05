@@ -42,9 +42,7 @@ async def list_notifications(
     if unread_only:
         query = query.where(Notification.read_at.is_(None))
 
-    result = await session.execute(
-        query.order_by(Notification.created_at.desc()).limit(limit)
-    )
+    result = await session.execute(query.order_by(Notification.created_at.desc()).limit(limit))
     items = result.scalars().all()
 
     # Счётчик считаем запросом, а не по выборке: с limit её длина ничего не
@@ -75,9 +73,7 @@ async def mark_read(
     # 404, а не 403: чужое уведомление для этого пользователя не существует —
     # отвечать «оно есть, но не ваше» значит подтверждать факт его наличия.
     if notification is None or notification.user_id != user.id:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Notification not found."
-        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Notification not found.")
 
     if notification.read_at is None:
         notification.read_at = datetime.now(UTC)
@@ -96,9 +92,7 @@ async def mark_all_read(
     session: AsyncSession = Depends(get_session),
 ):
     result = await session.execute(
-        select(Notification).where(
-            Notification.user_id == user.id, Notification.read_at.is_(None)
-        )
+        select(Notification).where(Notification.user_id == user.id, Notification.read_at.is_(None))
     )
     now = datetime.now(UTC)
     for notification in result.scalars().all():

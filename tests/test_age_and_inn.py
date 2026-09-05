@@ -12,6 +12,7 @@ from app.registry.checksum import is_valid_inn, normalize_inn
 # Возраст
 # ---------------------------------------------------------------------------
 
+
 def test_age_counts_full_years_before_birthday():
     """Классическая ошибка «текущий год минус год рождения» даёт здесь 18,
     хотя человеку ещё 17 — и от этого зависит, нужен ли документ."""
@@ -25,8 +26,8 @@ def test_age_increments_on_the_birthday_itself():
 @pytest.mark.parametrize(
     ("birth_year", "expected"),
     [
-        (2011, ConsentStatus.awaiting),      # 15 лет
-        (2009, ConsentStatus.awaiting),      # 17 лет
+        (2011, ConsentStatus.awaiting),  # 15 лет
+        (2009, ConsentStatus.awaiting),  # 17 лет
         (2008, ConsentStatus.not_required),  # 18 лет
         (1990, ConsentStatus.not_required),
     ],
@@ -50,10 +51,11 @@ def test_age_boundaries_are_the_documented_ones():
 # ИНН
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.parametrize(
     "inn",
     [
-        "7707083893",    # ПАО Сбербанк, 10 знаков
+        "7707083893",  # ПАО Сбербанк, 10 знаков
         "500100732259",  # 12 знаков
     ],
 )
@@ -64,10 +66,10 @@ def test_valid_inn_checksums(inn):
 @pytest.mark.parametrize(
     "inn",
     [
-        "7707083894",    # последняя цифра испорчена
+        "7707083894",  # последняя цифра испорчена
         "500100732258",
-        "123456789",     # короткий
-        "12345678901",   # 11 знаков — такой длины ИНН не бывает
+        "123456789",  # короткий
+        "12345678901",  # 11 знаков — такой длины ИНН не бывает
         "",
         "abcdefghij",
     ],

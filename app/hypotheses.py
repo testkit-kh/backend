@@ -16,6 +16,7 @@ from fastapi import (
     APIRouter,
     Depends,
     HTTPException,
+    Query,
     Response,
     status,
 )
@@ -58,12 +59,15 @@ from app.schemas import (
     HypothesisOut,
     HypothesisValidateRequest,
     HypothesisValidateResponse,
+    MyHypothesesListOut,
+    MyHypothesisOut,
 )
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(
-    prefix="/api/v1", tags=["business-logic"],
+    prefix="/api/v1",
+    tags=["business-logic"],
 )
 
 # Порог в секундах для определения офлайн-режима.
@@ -75,6 +79,7 @@ _OFFLINE_THRESHOLD = timedelta(minutes=5)
 # ═══════════════════════════════════════════════════════════
 # Хелперы — role guards
 # ═══════════════════════════════════════════════════════════
+
 
 def _require_volunteer(user: User) -> Volunteer:
     """Волонтёрский профиль или 403."""
@@ -100,6 +105,7 @@ def _require_staff(user: User) -> Staff:
 # Вспомогательные функции для create_hypothesis
 # ═══════════════════════════════════════════════════════════
 
+
 def _extract_lat_lon(body: HypothesisCreateRequest):
     """Извлечь lat/lon: из geometry (centroid) или из полей.
 
@@ -117,10 +123,7 @@ def _extract_lat_lon(body: HypothesisCreateRequest):
             return body.lat, body.lon
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=(
-                "Для Polygon нужны lat + lon"
-                " (метка точки на карте)."
-            ),
+            detail=("Для Polygon нужны lat + lon (метка точки на карте)."),
         )
     # Обратная совместимость — валидатор гарантирует,
     # что lat и lon не None, если geometry отсутствует.
@@ -133,10 +136,12 @@ def _build_geom_wkt(body: HypothesisCreateRequest):
     """
     if body.geometry is None:
         return None
-    return json.dumps({
-        "type": body.geometry.type,
-        "coordinates": body.geometry.coordinates,
-    })
+    return json.dumps(
+        {
+            "type": body.geometry.type,
+            "coordinates": body.geometry.coordinates,
+        }
+    )
 
 
 async def _find_org_with_buffer(
@@ -155,7 +160,8 @@ async def _find_org_with_buffer(
         .where(
             Organization.territory_geom.isnot(None),
             ST_Intersects(
-                Organization.territory_geom, point,
+                Organization.territory_geom,
+                point,
             ),
         )
         .limit(1)
@@ -173,7 +179,8 @@ async def _find_org_with_buffer(
         Geography(srid=4326),
     )
     geog_point = func.ST_SetSRID(
-        point, 4326,
+        point,
+        4326,
     ).cast(Geography(srid=4326))
     q_buf = (
         select(Organization.id)
@@ -191,8 +198,7 @@ async def _find_org_with_buffer(
     org_id = result.scalar_one_or_none()
     if org_id is not None:
         logger.info(
-            "Точка попала в буферную зону"
-            " (%.1f км) ООПТ %s",
+            "Точка попала в буферную зону (%.1f км) ООПТ %s",
             settings.COASTAL_BUFFER_KM,
             org_id,
         )
@@ -200,8 +206,7 @@ async def _find_org_with_buffer(
 
     # Шаг 3: ни одна ООПТ не найдена — допустимо
     logger.info(
-        "Точка не попала ни в одну ООПТ;"
-        " создаём с organization_id = NULL.",
+        "Точка не попала ни в одну ООПТ; создаём с organization_id = NULL.",
     )
     return None
 
@@ -230,6 +235,7 @@ def _compute_offline_payload(
 # ═══════════════════════════════════════════════════════════
 # 1. POST /api/v1/hypotheses
 # ═══════════════════════════════════════════════════════════
+
 
 @router.post(
     "/hypotheses",
@@ -284,18 +290,21 @@ async def create_hypothesis(
     # ---- Координаты ----
     lat, lon = _extract_lat_lon(body)
     point = ST_SetSRID(
-        ST_MakePoint(lon, lat), 4326,
+        ST_MakePoint(lon, lat),
+        4326,
     )
 
     # ---- P0-3: поиск ООПТ с буферной зоной ----
     org_id = await _find_org_with_buffer(
-        session, point,
+        session,
+        point,
     )
 
     # ---- Мониторинговая площадка ----
     if body.monitoring_site_id is not None:
         site = await session.get(
-            MonitoringSite, body.monitoring_site_id,
+            MonitoringSite,
+            body.monitoring_site_id,
         )
         if site is None:
             raise HTTPException(
@@ -306,19 +315,13 @@ async def create_hypothesis(
         if org_id and site.organization_id != org_id:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=(
-                    "Площадка принадлежит другой ООПТ,"
-                    " чем координаты точки."
-                ),
+                detail=("Площадка принадлежит другой ООПТ, чем координаты точки."),
             )
 
     # ---- Смета уборки ----
     trash = body.trash
     estimate = None
-    if (
-        trash.dominant_category is not None
-        and trash.access_type is not None
-    ):
+    if trash.dominant_category is not None and trash.access_type is not None:
         estimate = estimate_cleanup(
             volume_m3=trash.estimated_volume_m3,
             area_m2=trash.estimated_area_m2,
@@ -331,7 +334,8 @@ async def create_hypothesis(
     geojson_str = _build_geom_wkt(body)
     if geojson_str is not None:
         geom_value = func.ST_SetSRID(
-            func.ST_GeomFromGeoJSON(geojson_str), 4326,
+            func.ST_GeomFromGeoJSON(geojson_str),
+            4326,
         )
 
     # ---- Создание записи ----
@@ -344,34 +348,25 @@ async def create_hypothesis(
         lat=lat,
         lon=lon,
         location=func.ST_SetSRID(
-            func.ST_MakePoint(lon, lat), 4326,
+            func.ST_MakePoint(lon, lat),
+            4326,
         ),
         geom=geom_value,
         description=body.description,
         photo_url=body.photo_url,
         status=HypothesisStatus.pending,
         trash_categories=(
-            [c.value for c in trash.trash_categories]
-            if trash.trash_categories
-            else None
+            [c.value for c in trash.trash_categories] if trash.trash_categories else None
         ),
         dominant_category=trash.dominant_category,
         fraction=trash.fraction,
         access_type=trash.access_type,
         estimated_area_m2=trash.estimated_area_m2,
         estimated_volume_m3=trash.estimated_volume_m3,
-        computed_volume_m3=(
-            estimate.volume_m3 if estimate else None
-        ),
-        computed_mass_kg=(
-            estimate.mass_kg if estimate else None
-        ),
-        cleanup_cost_rub=(
-            estimate.total_rub if estimate else None
-        ),
-        cost_assumptions=(
-            estimate.assumptions if estimate else None
-        ),
+        computed_volume_m3=(estimate.volume_m3 if estimate else None),
+        computed_mass_kg=(estimate.mass_kg if estimate else None),
+        cleanup_cost_rub=(estimate.total_rub if estimate else None),
+        cost_assumptions=(estimate.assumptions if estimate else None),
         monitoring_site_id=body.monitoring_site_id,
     )
     session.add(hypothesis)
@@ -387,44 +382,22 @@ async def create_hypothesis(
         lon=lon,
         payload={
             "hypothesis_id": str(hypothesis.id),
-            "organization_id": (
-                str(org_id) if org_id else None
-            ),
+            "organization_id": (str(org_id) if org_id else None),
             **offline_info,
             "has_photo": body.photo_url is not None,
             "trash_categories": (
-                [c.value for c in trash.trash_categories]
-                if trash.trash_categories
-                else None
+                [c.value for c in trash.trash_categories] if trash.trash_categories else None
             ),
             "dominant_category": (
-                trash.dominant_category.value
-                if trash.dominant_category
-                else None
+                trash.dominant_category.value if trash.dominant_category else None
             ),
-            "fraction": (
-                trash.fraction.value
-                if trash.fraction
-                else None
-            ),
-            "access_type": (
-                trash.access_type.value
-                if trash.access_type
-                else None
-            ),
-            "volume_m3": (
-                estimate.volume_m3 if estimate else None
-            ),
-            "mass_kg": (
-                estimate.mass_kg if estimate else None
-            ),
-            "cleanup_cost_rub": (
-                estimate.total_rub if estimate else None
-            ),
+            "fraction": (trash.fraction.value if trash.fraction else None),
+            "access_type": (trash.access_type.value if trash.access_type else None),
+            "volume_m3": (estimate.volume_m3 if estimate else None),
+            "mass_kg": (estimate.mass_kg if estimate else None),
+            "cleanup_cost_rub": (estimate.total_rub if estimate else None),
             "monitoring_site_id": (
-                str(body.monitoring_site_id)
-                if body.monitoring_site_id
-                else None
+                str(body.monitoring_site_id) if body.monitoring_site_id else None
             ),
         },
     )
@@ -445,10 +418,10 @@ async def create_hypothesis(
     return HypothesisOut.model_validate(hypothesis)
 
 
-
 # ═══════════════════════════════════════════════════════════════════════════
 # 2. GET /api/v1/hypotheses/pending — list pending hypotheses (staff only)
 # ═══════════════════════════════════════════════════════════════════════════
+
 
 @router.get(
     "/hypotheses/pending",
@@ -479,6 +452,7 @@ async def list_pending_hypotheses(
 # 3. POST /api/v1/hypotheses/{id}/validate — validate hypothesis (staff)
 # ═══════════════════════════════════════════════════════════════════════════
 
+
 @router.post(
     "/hypotheses/{hypothesis_id}/validate",
     response_model=HypothesisValidateResponse,
@@ -493,9 +467,7 @@ async def validate_hypothesis(
     staff = _require_staff(user)
 
     # Fetch hypothesis
-    result = await session.execute(
-        select(Hypothesis).where(Hypothesis.id == hypothesis_id)
-    )
+    result = await session.execute(select(Hypothesis).where(Hypothesis.id == hypothesis_id))
     hypothesis = result.scalar_one_or_none()
 
     if hypothesis is None:
@@ -513,12 +485,16 @@ async def validate_hypothesis(
 
     # Time from submission to verdict — the operational KPI. Computed here
     # because `updated_at` is about to be overwritten by this very update.
-    time_to_validate = (
-        datetime.now(UTC) - hypothesis.created_at
-    ).total_seconds()
+    time_to_validate = (datetime.now(UTC) - hypothesis.created_at).total_seconds()
 
     # Update status
     hypothesis.status = body.status
+    # Причина хранится только у отказа: у одобрения её нет, а оставлять
+    # текст от предыдущего отказа при пересмотре нельзя — в ленте «Мои
+    # точки» он выглядел бы как причина одобрения.
+    hypothesis.reject_reason = (
+        body.reason.strip() if body.status == HypothesisStatus.rejected and body.reason else None
+    )
     await session.flush()
 
     await emit(
@@ -567,8 +543,80 @@ async def validate_hypothesis(
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# 4. GET /api/v1/hypotheses/my — P1-5, лента «Мои точки» (волонтёр)
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+@router.get(
+    "/hypotheses/my",
+    response_model=MyHypothesesListOut,
+    summary="Мои точки: статус, описание и причина отказа",
+)
+async def list_my_hypotheses(
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+    status_filter: HypothesisStatus | None = Query(
+        default=None,
+        alias="status",
+        description="Фильтр по статусу точки",
+    ),
+    limit: int = Query(default=20, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+):
+    """Личная лента автора точек.
+
+    Смысл ручки — обратная связь: человек отправил точку и должен видеть,
+    что с ней стало. Поэтому отдаются все статусы, включая rejected с
+    причиной: молчаливый отказ — главная причина, по которой волонтёр не
+    присылает вторую точку.
+
+    Offset-пагинация, а не курсор: лента своя, короткая и отсортирована по
+    дате создания, которая не меняется — сдвига страниц, из-за которого
+    курсоры и нужны, здесь не возникает.
+    """
+    _require_volunteer(user)
+
+    filters = [Hypothesis.author_id == user.id]
+    if status_filter is not None:
+        filters.append(Hypothesis.status == status_filter)
+
+    query = (
+        select(Hypothesis)
+        .where(*filters)
+        .order_by(Hypothesis.created_at.desc())
+        .limit(limit)
+        .offset(offset)
+    )
+    result = await session.execute(query)
+    # unique(): Hypothesis.event и author подтягиваются joined-загрузкой,
+    # из-за join строки дублируются на уровне курсора.
+    rows = result.unique().scalars().all()
+
+    total = await session.scalar(select(func.count()).select_from(Hypothesis).where(*filters))
+
+    items: list[MyHypothesisOut] = []
+    for hypothesis in rows:
+        item = MyHypothesisOut.model_validate(hypothesis)
+        # Мероприятие уже в памяти (lazy="joined") — отдельных запросов нет.
+        event = hypothesis.event
+        if event is not None:
+            item.event_id = event.id
+            item.event_status = event.status
+            item.event_scheduled_at = event.scheduled_at
+        items.append(item)
+
+    return MyHypothesesListOut(
+        items=items,
+        total=total or 0,
+        limit=limit,
+        offset=offset,
+    )
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # 5. GET /api/v1/map/layers — GeoJSON for MapLibre
 # ═══════════════════════════════════════════════════════════════════════════
+
 
 @router.get(
     "/map/layers",

@@ -5,7 +5,7 @@ Pydantic v2 schemas for request / response serialization.
 from __future__ import annotations
 
 import uuid
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from typing import Any
 
 from pydantic import (
@@ -22,6 +22,7 @@ from app.cleanup_cost import AccessType, TrashCategory, TrashFraction
 from app.models import (
     CertificateStatus,
     ConsentStatus,
+    EventStatus,
     HypothesisStatus,
     NotificationKind,
     OrgVerificationStatus,
@@ -32,6 +33,7 @@ from app.models import (
 # ═══════════════════════════════════════════════════════════════════════════
 # Auth — requests
 # ═══════════════════════════════════════════════════════════════════════════
+
 
 class VolunteerRegisterRequest(BaseModel):
     email: EmailStr
@@ -71,6 +73,7 @@ class OrganizationRegisterRequest(BaseModel):
 
 class LoginRequest(BaseModel):
     """Mirrors OAuth2PasswordRequestForm for JSON body fallback."""
+
     username: str  # email
     password: str
 
@@ -78,6 +81,7 @@ class LoginRequest(BaseModel):
 # ═══════════════════════════════════════════════════════════════════════════
 # Auth — responses
 # ═══════════════════════════════════════════════════════════════════════════
+
 
 class TokenResponse(BaseModel):
     access_token: str
@@ -87,6 +91,7 @@ class TokenResponse(BaseModel):
 # ═══════════════════════════════════════════════════════════════════════════
 # User / profile responses
 # ═══════════════════════════════════════════════════════════════════════════
+
 
 class UserBase(BaseModel):
     model_config = ConfigDict(from_attributes=True)
@@ -130,6 +135,7 @@ UserProfileResponse = VolunteerProfile | StaffProfile
 # Hypotheses
 # ═══════════════════════════════════════════════════════════════════════════
 
+
 class TrashDetails(BaseModel):
     """Характеристики мусора — их заполняет человек на месте.
 
@@ -156,9 +162,7 @@ class TrashDetails(BaseModel):
 
     @field_validator("trash_categories")
     @classmethod
-    def _no_duplicates(
-        cls, value: list[TrashCategory] | None
-    ) -> list[TrashCategory] | None:
+    def _no_duplicates(cls, value: list[TrashCategory] | None) -> list[TrashCategory] | None:
         if value is not None and len(set(value)) != len(value):
             raise ValueError("trash_categories must not contain duplicates")
         return value
@@ -201,35 +205,35 @@ class HypothesisCreateRequest(BaseModel):
     # ---- Геометрия (предпочтительный путь) ----
     geometry: GeoJSONGeometry | None = Field(
         default=None,
-        description=(
-            "GeoJSON Geometry: Point или Polygon."
-            " При передаче lat/lon можно опустить."
-        ),
+        description=("GeoJSON Geometry: Point или Polygon. При передаче lat/lon можно опустить."),
     )
 
     # ---- Обратная совместимость: lat/lon ----
     lat: float | None = Field(
-        default=None, ge=-90.0, le=90.0,
+        default=None,
+        ge=-90.0,
+        le=90.0,
         description="Latitude (WGS-84). Обязателен без geometry.",
     )
     lon: float | None = Field(
-        default=None, ge=-180.0, le=180.0,
+        default=None,
+        ge=-180.0,
+        le=180.0,
         description="Longitude (WGS-84). Обязателен без geometry.",
     )
 
     description: str = Field(
-        min_length=1, max_length=4096,
+        min_length=1,
+        max_length=4096,
     )
     photo_url: str | None = Field(
-        default=None, max_length=2048,
+        default=None,
+        max_length=2048,
     )
     trash: TrashDetails = Field(default_factory=TrashDetails)
     monitoring_site_id: uuid.UUID | None = Field(
         default=None,
-        description=(
-            "Если точка — очередной замер на площадке"
-            " многолетних наблюдений"
-        ),
+        description=("Если точка — очередной замер на площадке многолетних наблюдений"),
     )
 
     # ---- P0-1: офлайн-идемпотентность ----
@@ -242,10 +246,7 @@ class HypothesisCreateRequest(BaseModel):
     )
     created_at_client: datetime | None = Field(
         default=None,
-        description=(
-            "Время создания на устройстве."
-            " Для определения offline-режима."
-        ),
+        description=("Время создания на устройстве. Для определения offline-режима."),
     )
 
     @model_validator(mode="after")
@@ -254,73 +255,41 @@ class HypothesisCreateRequest(BaseModel):
         либо geometry, либо пара lat+lon.
         """
         has_geom = self.geometry is not None
-        has_latlon = (
-            self.lat is not None
-            and self.lon is not None
-        )
+        has_latlon = self.lat is not None and self.lon is not None
         if not has_geom and not has_latlon:
-            raise ValueError(
-                "Передайте geometry (GeoJSON) или"
-                " оба поля lat + lon."
-            )
+            raise ValueError("Передайте geometry (GeoJSON) или оба поля lat + lon.")
         return self
 
     @field_validator("geometry")
     @classmethod
     def _validate_geometry(
-        cls, value: GeoJSONGeometry | None,
+        cls,
+        value: GeoJSONGeometry | None,
     ) -> GeoJSONGeometry | None:
         """Строгая проверка GeoJSON: тип и структура координат."""
         if value is None:
             return None
         allowed = {"Point", "Polygon", "MultiPolygon"}
         if value.type not in allowed:
-            raise ValueError(
-                f"geometry.type должен быть одним из:"
-                f" {', '.join(sorted(allowed))}"
-            )
+            raise ValueError(f"geometry.type должен быть одним из: {', '.join(sorted(allowed))}")
         coords = value.coordinates
         if value.type == "Point":
-            if (
-                not isinstance(coords, list)
-                or len(coords) < 2
-            ):
-                raise ValueError(
-                    "Point.coordinates: [lon, lat]"
-                )
+            if not isinstance(coords, list) or len(coords) < 2:
+                raise ValueError("Point.coordinates: [lon, lat]")
             lon, lat = coords[0], coords[1]
             if not (-180 <= lon <= 180):
-                raise ValueError(
-                    f"lon={lon} вне диапазона [-180, 180]"
-                )
+                raise ValueError(f"lon={lon} вне диапазона [-180, 180]")
             if not (-90 <= lat <= 90):
-                raise ValueError(
-                    f"lat={lat} вне диапазона [-90, 90]"
-                )
+                raise ValueError(f"lat={lat} вне диапазона [-90, 90]")
         elif value.type == "Polygon":
             # Минимум один линейный кольцевой массив
-            if (
-                not isinstance(coords, list)
-                or len(coords) < 1
-            ):
-                raise ValueError(
-                    "Polygon.coordinates: "
-                    "минимум одно кольцо"
-                )
+            if not isinstance(coords, list) or len(coords) < 1:
+                raise ValueError("Polygon.coordinates: минимум одно кольцо")
             ring = coords[0]
-            if (
-                not isinstance(ring, list)
-                or len(ring) < 4
-            ):
-                raise ValueError(
-                    "Polygon: кольцо должно содержать"
-                    " минимум 4 точки"
-                )
+            if not isinstance(ring, list) or len(ring) < 4:
+                raise ValueError("Polygon: кольцо должно содержать минимум 4 точки")
             if ring[0] != ring[-1]:
-                raise ValueError(
-                    "Polygon: кольцо должно быть"
-                    " замкнутым (first == last)"
-                )
+                raise ValueError("Polygon: кольцо должно быть замкнутым (first == last)")
         return value
 
 
@@ -328,14 +297,25 @@ class HypothesisValidateRequest(BaseModel):
     status: HypothesisStatus = Field(
         description="Новый статус гипотезы",
     )
+    reason: str | None = Field(
+        default=None,
+        max_length=1024,
+        description=(
+            "Причина отказа. Обязательна при rejected — волонтёр видит её в ленте «Мои точки»"
+        ),
+    )
 
     @field_validator("status")
     @classmethod
     def _status_is_a_verdict(
-        cls, value: HypothesisStatus,
+        cls,
+        value: HypothesisStatus,
     ) -> HypothesisStatus:
         """pending — начальное состояние, а не вердикт,
         который может установить модератор.
+
+        cleaned — тоже не вердикт: он ставится закрытием
+        мероприятия, а не рукой модератора.
         """
         allowed = {
             HypothesisStatus.approved,
@@ -343,16 +323,23 @@ class HypothesisValidateRequest(BaseModel):
             HypothesisStatus.drone_requested,
         }
         if value not in allowed:
-            raise ValueError(
-                "Status must be one of: "
-                f"{', '.join(s.value for s in allowed)}"
-            )
+            raise ValueError(f"Status must be one of: {', '.join(s.value for s in allowed)}")
         return value
+
+    @model_validator(mode="after")
+    def _reason_required_on_reject(
+        self,
+    ) -> HypothesisValidateRequest:
+        """Отказ без причины волонтёр прочитать не может:
+        он видит «нет» и не знает, что исправить.
+        """
+        if self.status == HypothesisStatus.rejected and not (self.reason or "").strip():
+            raise ValueError("reason is required when rejecting a hypothesis")
+        return self
 
 
 class HypothesisOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
-
 
     id: uuid.UUID
     author_id: uuid.UUID
@@ -362,6 +349,7 @@ class HypothesisOut(BaseModel):
     description: str
     photo_url: str | None
     status: HypothesisStatus
+    reject_reason: str | None = None
 
     # P0-1: офлайн-поля
     client_id: uuid.UUID | None = None
@@ -388,10 +376,211 @@ class HypothesisValidateResponse(BaseModel):
     event_id: uuid.UUID | None = None
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# P1-5 — лента «Мои точки»
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class MyHypothesisOut(BaseModel):
+    """Одна точка в личной ленте волонтёра.
+
+    Урезанная проекция HypothesisOut: смета и коэффициенты — рабочие данные
+    ООПТ, автору точки они не нужны. Зато нужны причина отказа и судьба
+    точки: попала ли она в мероприятие и когда его уберут.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    status: HypothesisStatus
+    description: str
+    #: Заполнена только при status == rejected.
+    reject_reason: str | None = None
+
+    lat: float
+    lon: float
+    photo_url: str | None = None
+    organization_id: uuid.UUID | None = None
+
+    # Мероприятие, в которое превратилась точка. Для волонтёра это ответ на
+    # «а что с ней дальше»: без него одобренная точка выглядит так же, как
+    # забытая.
+    event_id: uuid.UUID | None = None
+    event_status: EventStatus | None = None
+    event_scheduled_at: datetime | None = None
+
+    created_at: datetime
+    updated_at: datetime
+
+
+class MyHypothesesListOut(BaseModel):
+    """Страница ленты.
+
+    `total` считается отдельным запросом: с limit длина items ничего не
+    говорит о размере ленты, а клиенту нужно знать, есть ли что листать.
+    """
+
+    items: list[MyHypothesisOut]
+    total: int
+    limit: int
+    offset: int
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# P1-4 — мероприятия по уборке
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class EventOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    hypothesis_id: uuid.UUID
+    organization_id: uuid.UUID
+    title: str
+    description: str | None = None
+    place: str | None = None
+    scheduled_at: datetime | None = None
+    status: EventStatus
+
+    #: Сколько человек записалось. Не путать с actual_participants — тем,
+    #: сколько пришло.
+    participants_count: int = 0
+    #: Записан ли текущий пользователь. Всегда False в ответах сотруднику.
+    is_joined: bool = False
+
+    # ---- Итоги, заполняются при закрытии ----
+    completed_at: datetime | None = None
+    actual_participants: int | None = None
+    waste_volume_m3: float | None = None
+    waste_mass_kg: float | None = None
+    result_notes: str | None = None
+
+    created_at: datetime
+    updated_at: datetime
+
+
+class EventListOut(BaseModel):
+    items: list[EventOut]
+    total: int
+    limit: int
+    offset: int
+
+
+class EventUpdateRequest(BaseModel):
+    """PATCH-семантика: применяются только переданные поля.
+
+    Не переданное поле и переданный null — разные вещи (не трогать против
+    «стереть»), поэтому обработчик смотрит на model_fields_set, а не на
+    None.
+    """
+
+    scheduled_at: datetime | None = None
+    place: str | None = Field(default=None, max_length=512)
+    description: str | None = Field(default=None, max_length=4096)
+
+    @field_validator("scheduled_at")
+    @classmethod
+    def _tz_aware(cls, value: datetime | None) -> datetime | None:
+        """Наивную дату считаем UTC: колонка timestamptz, и asyncpg
+        не примет datetime без зоны.
+        """
+        if value is not None and value.tzinfo is None:
+            return value.replace(tzinfo=UTC)
+        return value
+
+    @model_validator(mode="after")
+    def _not_empty(self) -> EventUpdateRequest:
+        if not self.model_fields_set:
+            raise ValueError(
+                "Нужно передать хотя бы одно из полей: scheduled_at, place, description"
+            )
+        return self
+
+
+class EventCompleteRequest(BaseModel):
+    """Итоги уборки.
+
+    Объём или масса — хотя бы одно: без них закрытие мероприятия не даёт
+    проекту ничего, а именно эти числа идут в отчётность по вывезенному
+    мусору.
+    """
+
+    actual_participants: int = Field(
+        ge=0,
+        le=10_000,
+        description="Сколько человек реально пришло",
+    )
+    waste_volume_m3: float | None = Field(
+        default=None,
+        ge=0,
+        le=100_000,
+        description="Объём собранного мусора, м³",
+    )
+    waste_mass_kg: float | None = Field(
+        default=None,
+        ge=0,
+        le=1_000_000,
+        description="Масса собранного мусора, кг",
+    )
+    result_notes: str | None = Field(default=None, max_length=4096)
+    completed_at: datetime | None = Field(
+        default=None,
+        description="Фактическое время окончания; по умолчанию — сейчас",
+    )
+    #: Кто из записавшихся пришёл. Не передан — явку не размечаем:
+    #: пустой список и «не отмечали» это разные ситуации.
+    attended_user_ids: list[uuid.UUID] | None = Field(
+        default=None,
+        description="Участники, отмеченные как пришедшие",
+    )
+
+    @field_validator("completed_at")
+    @classmethod
+    def _tz_aware(cls, value: datetime | None) -> datetime | None:
+        if value is not None and value.tzinfo is None:
+            return value.replace(tzinfo=UTC)
+        return value
+
+    @model_validator(mode="after")
+    def _volume_or_mass(self) -> EventCompleteRequest:
+        if self.waste_volume_m3 is None and self.waste_mass_kg is None:
+            raise ValueError(
+                "Нужен объём или масса собранного мусора: waste_volume_m3 или waste_mass_kg"
+            )
+        return self
+
+
+class EventCompleteResponse(BaseModel):
+    """Ответ закрытия мероприятия.
+
+    Статус гипотезы возвращается явно: смена точки на cleaned — побочный
+    эффект этого вызова, и клиент должен видеть, что он произошёл, не
+    перезапрашивая точку.
+    """
+
+    event: EventOut
+    hypothesis_id: uuid.UUID
+    hypothesis_status: HypothesisStatus
+    attendance_marked: int = 0
+
+
+class EventJoinOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    event_id: uuid.UUID
+    user_id: uuid.UUID
+    joined_at: datetime
+    attended: bool
+    #: True, если запись уже существовала. Вместе с кодом 200 (а не 201)
+    #: отличает повтор от новой записи.
+    already_joined: bool = False
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Volunteers — certificate
 # ═══════════════════════════════════════════════════════════════════════════
+
 
 class CertificateRequest(BaseModel):
     certificate_url: HttpUrl
@@ -399,6 +588,7 @@ class CertificateRequest(BaseModel):
 
 class VolunteerProfileOut(BaseModel):
     """Returned from certificate endpoints."""
+
     model_config = ConfigDict(from_attributes=True)
 
     id: uuid.UUID
@@ -464,6 +654,7 @@ class CourseStatusOut(BaseModel):
 # Notifications
 # ═══════════════════════════════════════════════════════════════════════════
 
+
 class NotificationOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -495,6 +686,7 @@ class ReminderDispatchOut(BaseModel):
 # GeoJSON — map layers
 # ═══════════════════════════════════════════════════════════════════════════
 
+
 class GeoJSONGeometry(BaseModel):
     type: str
     coordinates: Any
@@ -524,6 +716,7 @@ class GeoJSONFeatureCollection(BaseModel):
 # ═══════════════════════════════════════════════════════════════════════════
 # Monitoring sites — площадки многолетних наблюдений
 # ═══════════════════════════════════════════════════════════════════════════
+
 
 class MonitoringSiteCreateRequest(BaseModel):
     name: str = Field(min_length=1, max_length=256)
@@ -621,6 +814,7 @@ class SiteAccumulationOut(BaseModel):
 # Registry — автозаполнение по ИНН
 # ═══════════════════════════════════════════════════════════════════════════
 
+
 class CompanyInfoOut(BaseModel):
     """Сведения из ЕГРЮЛ. `source` наружу отдаётся намеренно: фронт должен
     показывать, откуда данные, а на защите — что источник первичный."""
@@ -643,18 +837,13 @@ class CompanyInfoOut(BaseModel):
 # Parental consent
 # ═══════════════════════════════════════════════════════════════════════════
 
+
 class ParentalConsentCreateRequest(BaseModel):
     representative_name: str = Field(min_length=1, max_length=256)
-    representative_phone: str = Field(
-        min_length=5, max_length=32, pattern=r"^[\d\s\-\+\(\)]+$"
-    )
+    representative_phone: str = Field(min_length=5, max_length=32, pattern=r"^[\d\s\-\+\(\)]+$")
     representative_email: EmailStr
-    relation: str | None = Field(
-        default=None, max_length=64, description="мать / отец / опекун"
-    )
-    scan_url: HttpUrl | None = Field(
-        default=None, description="Скан подписанного согласия"
-    )
+    relation: str | None = Field(default=None, max_length=64, description="мать / отец / опекун")
+    scan_url: HttpUrl | None = Field(default=None, description="Скан подписанного согласия")
 
 
 class ParentalConsentOut(BaseModel):
@@ -687,6 +876,7 @@ class ConsentReviewRequest(BaseModel):
 # ═══════════════════════════════════════════════════════════════════════════
 # Cadastral parcels
 # ═══════════════════════════════════════════════════════════════════════════
+
 
 class CadastralParcelCreateRequest(BaseModel):
     cadastral_number: str = Field(
@@ -730,6 +920,7 @@ class ParcelGeometryRequest(BaseModel):
 # ═══════════════════════════════════════════════════════════════════════════
 # Analytics
 # ═══════════════════════════════════════════════════════════════════════════
+
 
 class DashboardEmbedOut(BaseModel):
     """Подписанная ссылка на дашборд Metabase.

@@ -79,6 +79,7 @@ def _site_out(
 # Площадки
 # ═══════════════════════════════════════════════════════════════════════════
 
+
 @router.post(
     "",
     response_model=MonitoringSiteOut,
@@ -92,9 +93,7 @@ async def create_site(
 ):
     organization_id = _require_staff_org(user)
 
-    existing = await session.execute(
-        select(MonitoringSite).where(MonitoringSite.code == body.code)
-    )
+    existing = await session.execute(select(MonitoringSite).where(MonitoringSite.code == body.code))
     if existing.scalar_one_or_none() is not None:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -108,9 +107,7 @@ async def create_site(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Monitoring site geometry must be a Polygon.",
             )
-        geom = func.ST_SetSRID(
-            func.ST_GeomFromGeoJSON(body.geometry.model_dump_json()), 4326
-        )
+        geom = func.ST_SetSRID(func.ST_GeomFromGeoJSON(body.geometry.model_dump_json()), 4326)
 
     site = MonitoringSite(
         organization_id=organization_id,
@@ -173,6 +170,7 @@ async def list_sites(
 # ═══════════════════════════════════════════════════════════════════════════
 # Замеры
 # ═══════════════════════════════════════════════════════════════════════════
+
 
 @router.post(
     "/{site_id}/surveys",
@@ -268,9 +266,7 @@ async def list_surveys(
     session: AsyncSession = Depends(get_session),
 ):
     result = await session.execute(
-        select(SiteSurvey)
-        .where(SiteSurvey.site_id == site_id)
-        .order_by(SiteSurvey.surveyed_at)
+        select(SiteSurvey).where(SiteSurvey.site_id == site_id).order_by(SiteSurvey.surveyed_at)
     )
     return [SiteSurveyOut.model_validate(s) for s in result.scalars().all()]
 
@@ -292,9 +288,7 @@ async def site_accumulation(
         )
 
     result = await session.execute(
-        select(SiteSurvey)
-        .where(SiteSurvey.site_id == site_id)
-        .order_by(SiteSurvey.surveyed_at)
+        select(SiteSurvey).where(SiteSurvey.site_id == site_id).order_by(SiteSurvey.surveyed_at)
     )
     surveys = list(result.scalars().all())
 
@@ -316,18 +310,12 @@ async def site_accumulation(
             # интервал. Только в этом случае это честная скорость накопления.
             volume_delta = current.computed_volume_m3
             mass_delta = current.computed_mass_kg
-        elif (
-            current.computed_volume_m3 is not None
-            and previous.computed_volume_m3 is not None
-        ):
+        elif current.computed_volume_m3 is not None and previous.computed_volume_m3 is not None:
             # Без уборки корректна только разность, и то при условии, что
             # мусор не уносило штормом — отрицательную дельту не показываем.
             delta = current.computed_volume_m3 - previous.computed_volume_m3
             volume_delta = delta if delta >= 0 else None
-            if (
-                current.computed_mass_kg is not None
-                and previous.computed_mass_kg is not None
-            ):
+            if current.computed_mass_kg is not None and previous.computed_mass_kg is not None:
                 mass = current.computed_mass_kg - previous.computed_mass_kg
                 mass_delta = mass if mass >= 0 else None
 
@@ -335,18 +323,14 @@ async def site_accumulation(
             kg_per_day = round(mass_delta / days, 3)
             rates.append(kg_per_day)
             if site.shoreline_length_m:
-                kg_per_100m_per_day = round(
-                    kg_per_day / (site.shoreline_length_m / 100.0), 4
-                )
+                kg_per_100m_per_day = round(kg_per_day / (site.shoreline_length_m / 100.0), 4)
 
         intervals.append(
             AccumulationInterval(
                 from_surveyed_at=previous.surveyed_at,
                 to_surveyed_at=current.surveyed_at,
                 days=round(days, 2),
-                volume_delta_m3=(
-                    round(volume_delta, 3) if volume_delta is not None else None
-                ),
+                volume_delta_m3=(round(volume_delta, 3) if volume_delta is not None else None),
                 mass_delta_kg=round(mass_delta, 1) if mass_delta is not None else None,
                 kg_per_day=kg_per_day,
                 kg_per_100m_per_day=kg_per_100m_per_day,

@@ -52,9 +52,7 @@ def test_estimate_rejects_non_positive_volume(volume):
 def test_access_dominates_the_bill():
     """Способ заброски важнее объёма — на этом стоит вся экономика проекта:
     Командорские острова и Куршская коса при одинаковой свалке стоят разного."""
-    common = dict(
-        volume_m3=10.0, area_m2=None, dominant=TrashCategory.fishing_gear
-    )
+    common = dict(volume_m3=10.0, area_m2=None, dominant=TrashCategory.fishing_gear)
     on_foot = estimate_cleanup(**common, access=AccessType.on_foot)
     helicopter = estimate_cleanup(**common, access=AccessType.helicopter)
 
@@ -65,12 +63,16 @@ def test_access_dominates_the_bill():
 def test_mobilisation_is_independent_of_volume():
     """Вертолёт летит один раз — поэтому точки выгодно группировать в выезд."""
     small = estimate_cleanup(
-        volume_m3=1.0, area_m2=None,
-        dominant=TrashCategory.plastic, access=AccessType.helicopter,
+        volume_m3=1.0,
+        area_m2=None,
+        dominant=TrashCategory.plastic,
+        access=AccessType.helicopter,
     )
     large = estimate_cleanup(
-        volume_m3=50.0, area_m2=None,
-        dominant=TrashCategory.plastic, access=AccessType.helicopter,
+        volume_m3=50.0,
+        area_m2=None,
+        dominant=TrashCategory.plastic,
+        access=AccessType.helicopter,
     )
 
     assert small is not None and large is not None
@@ -81,12 +83,16 @@ def test_mass_follows_bulk_density_of_dominant_category():
     """Пластик лежит рыхло, строительный мусор — плотно: при равном объёме
     масса отличается на порядок, и от неё зависит транспорт."""
     plastic = estimate_cleanup(
-        volume_m3=10.0, area_m2=None,
-        dominant=TrashCategory.plastic, access=AccessType.on_foot,
+        volume_m3=10.0,
+        area_m2=None,
+        dominant=TrashCategory.plastic,
+        access=AccessType.on_foot,
     )
     construction = estimate_cleanup(
-        volume_m3=10.0, area_m2=None,
-        dominant=TrashCategory.construction, access=AccessType.on_foot,
+        volume_m3=10.0,
+        area_m2=None,
+        dominant=TrashCategory.construction,
+        access=AccessType.on_foot,
     )
 
     assert plastic is not None and construction is not None
@@ -96,8 +102,10 @@ def test_mass_follows_bulk_density_of_dominant_category():
 def test_assumptions_are_exposed():
     """Коэффициенты отдаются наружу: смета без объяснения — это не смета."""
     estimate = estimate_cleanup(
-        volume_m3=5.0, area_m2=None,
-        dominant=TrashCategory.glass, access=AccessType.boat,
+        volume_m3=5.0,
+        area_m2=None,
+        dominant=TrashCategory.glass,
+        access=AccessType.boat,
     )
 
     assert estimate is not None

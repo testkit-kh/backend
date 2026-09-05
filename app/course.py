@@ -66,6 +66,7 @@ def _require_coordinator(user: User) -> None:
 # Уход на курс
 # ═══════════════════════════════════════════════════════════════════════════
 
+
 @router.get(
     "/course/redirect",
     response_model=CourseRedirectOut,
@@ -140,9 +141,7 @@ async def course_status(
             EventType.app_reopened_post_redirect,
             user_id=user.id,
             payload={
-                "days_since_redirect": (
-                    datetime.now(UTC) - volunteer.course_redirect_at
-                ).days
+                "days_since_redirect": (datetime.now(UTC) - volunteer.course_redirect_at).days
             },
         )
 
@@ -162,6 +161,7 @@ async def course_status(
 # ═══════════════════════════════════════════════════════════════════════════
 # Сертификат
 # ═══════════════════════════════════════════════════════════════════════════
+
 
 @router.post(
     "/volunteers/me/certificate",
@@ -249,14 +249,12 @@ async def review_certificate(
 
     volunteer = await session.get(Volunteer, volunteer_id)
     if volunteer is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Volunteer not found."
-        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Volunteer not found.")
     if volunteer.certificate_status != CertificateStatus.pending:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=f"Certificate is not pending review "
-                   f"(current status: {volunteer.certificate_status.value}).",
+            f"(current status: {volunteer.certificate_status.value}).",
         )
 
     now = datetime.now(UTC)
@@ -303,11 +301,7 @@ async def review_certificate(
                 if approved
                 else NotificationKind.certificate_rejected
             ),
-            title=(
-                "Сертификат принят — карта открыта"
-                if approved
-                else "Сертификат отклонён"
-            ),
+            title=("Сертификат принят — карта открыта" if approved else "Сертификат отклонён"),
             body=(
                 "Можно отмечать загрязнения на карте своей территории."
                 if approved

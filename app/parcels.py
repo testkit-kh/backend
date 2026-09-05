@@ -62,6 +62,7 @@ def _require_staff_org(user: User) -> uuid.UUID:
 # Фоновый резолвинг
 # ═══════════════════════════════════════════════════════════════════════════
 
+
 async def resolve_parcel_task(parcel_id: uuid.UUID) -> None:
     """Подтянуть границы участка и пересобрать территорию организации.
 
@@ -99,9 +100,9 @@ async def resolve_parcel_task(parcel_id: uuid.UUID) -> None:
         # Площадь считаем в географии: в градусах она бессмысленна, а
         # гектары нужны и для сметы уборки, и для отчётности ООПТ.
         parcel.area_ha = await session.scalar(
-            select(
-                func.ST_Area(cast(CadastralParcel.geom, Geography)) / 10_000.0
-            ).where(CadastralParcel.id == parcel.id)
+            select(func.ST_Area(cast(CadastralParcel.geom, Geography)) / 10_000.0).where(
+                CadastralParcel.id == parcel.id
+            )
         )
 
         await _rebuild_territory(session, parcel.organization_id)
@@ -129,6 +130,7 @@ async def _rebuild_territory(session: AsyncSession, organization_id: uuid.UUID) 
 # ═══════════════════════════════════════════════════════════════════════════
 # CRUD участков
 # ═══════════════════════════════════════════════════════════════════════════
+
 
 @router.post(
     "/organizations/me/parcels",
@@ -202,9 +204,7 @@ async def list_parcels(
         .where(CadastralParcel.organization_id == organization_id)
         .order_by(CadastralParcel.created_at)
     )
-    return [
-        CadastralParcelOut.model_validate(p) for p in result.unique().scalars().all()
-    ]
+    return [CadastralParcelOut.model_validate(p) for p in result.unique().scalars().all()]
 
 
 @router.post(
@@ -222,9 +222,7 @@ async def retry_parcel(
     organization_id = _require_staff_org(user)
     parcel = await session.get(CadastralParcel, parcel_id)
     if parcel is None or parcel.organization_id != organization_id:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Parcel not found."
-        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Parcel not found.")
 
     parcel.status = ParcelStatus.pending
     parcel.resolve_error = None
@@ -268,8 +266,8 @@ async def resolve_check(
             "detail": str(error),
             "elapsed_seconds": round(time.monotonic() - started, 1),
             "hint": "Похоже на сетевую блокировку. Проверьте с другой сети — "
-                    "границы всегда можно задать вручную через "
-                    "PUT /api/v1/parcels/{id}/geometry",
+            "границы всегда можно задать вручную через "
+            "PUT /api/v1/parcels/{id}/geometry",
         }
 
     coordinates = geometry.geojson.get("coordinates") or []
@@ -304,14 +302,10 @@ async def set_parcel_geometry(
     organization_id = _require_staff_org(user)
     parcel = await session.get(CadastralParcel, parcel_id)
     if parcel is None or parcel.organization_id != organization_id:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Parcel not found."
-        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Parcel not found.")
 
     geometry = func.ST_Multi(
-        func.ST_SetSRID(
-            func.ST_GeomFromGeoJSON(body.geometry.model_dump_json()), 4326
-        )
+        func.ST_SetSRID(func.ST_GeomFromGeoJSON(body.geometry.model_dump_json()), 4326)
     )
     parcel.geom = geometry
     parcel.status = ParcelStatus.resolved
@@ -344,9 +338,7 @@ async def delete_parcel(
     organization_id = _require_staff_org(user)
     parcel = await session.get(CadastralParcel, parcel_id)
     if parcel is None or parcel.organization_id != organization_id:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Parcel not found."
-        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Parcel not found.")
 
     await session.delete(parcel)
     await session.flush()
@@ -358,6 +350,7 @@ async def delete_parcel(
 # ═══════════════════════════════════════════════════════════════════════════
 # Слой карты: кому что принадлежит
 # ═══════════════════════════════════════════════════════════════════════════
+
 
 @router.get(
     "/map/parcels.geojson",

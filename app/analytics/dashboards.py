@@ -119,8 +119,7 @@ async def dashboard_embed(
     if dashboard.number <= 0:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=f"Дашборд {slug} ещё не создан в Metabase "
-                   "(запустите scripts/metabase_seed.py).",
+            detail=f"Дашборд {slug} ещё не создан в Metabase (запустите scripts/metabase_seed.py).",
         )
 
     params: dict[str, str] = {}
@@ -148,8 +147,7 @@ async def dashboard_embed(
         title=dashboard.title,
         # bordered/titled=false — дашборд встраивается в наш интерфейс и не
         # должен выглядеть как чужое окно внутри окна.
-        url=f"{settings.METABASE_SITE_URL}/embed/dashboard/{token}"
-            "#bordered=false&titled=false",
+        url=f"{settings.METABASE_SITE_URL}/embed/dashboard/{token}#bordered=false&titled=false",
         expires_in=expires_in,
         scoped_to_organization=dashboard.scoped,
     )
@@ -186,9 +184,7 @@ async def summary(
 
     counts = (
         await session.execute(
-            select(Hypothesis.status, func.count())
-            .where(scope)
-            .group_by(Hypothesis.status)
+            select(Hypothesis.status, func.count()).where(scope).group_by(Hypothesis.status)
         )
     ).all()
     by_status = {status_value: count for status_value, count in counts}

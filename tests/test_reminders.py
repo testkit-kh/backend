@@ -57,6 +57,7 @@ def make_volunteer(**kwargs) -> Volunteer:
 # Ветки эксперимента
 # ---------------------------------------------------------------------------
 
+
 def test_variant_is_stable_for_the_same_user():
     """Человек обязан всегда попадать в одну ветку, иначе замер бессмыслен."""
     user_id = uuid.uuid4()
@@ -74,6 +75,7 @@ def test_variants_split_roughly_evenly():
 # ---------------------------------------------------------------------------
 # Курс
 # ---------------------------------------------------------------------------
+
 
 def test_no_course_reminders_before_leaving_to_the_course():
     """Кто не уходил на курс, застрял раньше — это другая проблема."""
@@ -110,14 +112,14 @@ def test_nothing_on_the_same_day():
 def test_stages_follow_the_variant_schedule(variant):
     """Ветка задаёт расписание касаний, а не только метку в payload."""
     user = next(
-        u for u in (make_user(uuid.uuid4()) for _ in range(200))
-        if variant_for(u.id) == variant
+        u for u in (make_user(uuid.uuid4()) for _ in range(200)) if variant_for(u.id) == variant
     )
     days = VARIANTS[variant]
     volunteer = make_volunteer(course_redirect_at=NOW - timedelta(days=days[0]))
 
     stages = {
-        r.stage for r in _course_reminders(volunteer, user, NOW)
+        r.stage
+        for r in _course_reminders(volunteer, user, NOW)
         if r.kind == NotificationKind.course_not_finished
     }
 
@@ -133,7 +135,8 @@ def test_rejected_certificate_gets_its_own_wording():
     )
 
     unfinished = [
-        r for r in _course_reminders(volunteer, make_user(), NOW)
+        r
+        for r in _course_reminders(volunteer, make_user(), NOW)
         if r.kind == NotificationKind.course_not_finished
     ]
 
@@ -145,6 +148,7 @@ def test_rejected_certificate_gets_its_own_wording():
 # ---------------------------------------------------------------------------
 # Согласие
 # ---------------------------------------------------------------------------
+
 
 def test_consent_reminder_only_when_awaiting():
     for status in (ConsentStatus.not_required, ConsentStatus.approved, ConsentStatus.rejected):
@@ -172,6 +176,7 @@ def test_consent_reminder_says_the_course_is_still_open():
 # ---------------------------------------------------------------------------
 # Дедупликация
 # ---------------------------------------------------------------------------
+
 
 def test_dedupe_key_separates_stages_and_kinds():
     user_id = uuid.uuid4()

@@ -69,20 +69,17 @@ def verify_password(plain: str, hashed: str) -> bool:
 # JWT helpers
 # ---------------------------------------------------------------------------
 
+
 def create_access_token(data: dict) -> str:
     payload = data.copy()
-    expire = datetime.now(UTC) + timedelta(
-        minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES
-    )
+    expire = datetime.now(UTC) + timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
     payload.update({"exp": expire})
     return jwt.encode(payload, settings.SECRET_KEY, algorithm=settings.JWT_ALGORITHM)
 
 
 def decode_access_token(token: str) -> dict:
     try:
-        return jwt.decode(
-            token, settings.SECRET_KEY, algorithms=[settings.JWT_ALGORITHM]
-        )
+        return jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.JWT_ALGORITHM])
     except jwt.ExpiredSignatureError:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -98,6 +95,7 @@ def decode_access_token(token: str) -> dict:
 # ---------------------------------------------------------------------------
 # External INN verification — MOCK / STUB
 # ---------------------------------------------------------------------------
+
 
 async def verify_inn_external(session: AsyncSession, inn: str) -> tuple[bool, str | None]:
     """Проверка ИНН по ЕГРЮЛ.
@@ -122,6 +120,7 @@ async def verify_inn_external(session: AsyncSession, inn: str) -> tuple[bool, st
 # ---------------------------------------------------------------------------
 # Dependencies
 # ---------------------------------------------------------------------------
+
 
 async def get_current_user(
     token: str = Depends(oauth2_scheme),
@@ -157,6 +156,7 @@ async def get_current_user(
 # Endpoints
 # ---------------------------------------------------------------------------
 
+
 @router.post(
     "/register/volunteer",
     response_model=VolunteerProfile,
@@ -176,7 +176,7 @@ async def register_volunteer(
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"Самостоятельное участие — с {MIN_AGE} лет. "
-                       "Для младших участников есть формат со школой.",
+                "Для младших участников есть формат со школой.",
             )
         is_over_14 = True
         consent_status = required_consent_status(body.birth_date)
@@ -190,9 +190,7 @@ async def register_volunteer(
         consent_status = ConsentStatus.not_required
 
     # Check duplicate email
-    existing = await session.execute(
-        select(User).where(User.email == body.email)
-    )
+    existing = await session.execute(select(User).where(User.email == body.email))
     if existing.scalar_one_or_none() is not None:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -258,9 +256,7 @@ async def register_organization(
     session: AsyncSession = Depends(get_session),
 ):
     # Check duplicate email
-    existing_user = await session.execute(
-        select(User).where(User.email == body.email)
-    )
+    existing_user = await session.execute(select(User).where(User.email == body.email))
     if existing_user.scalar_one_or_none() is not None:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -268,9 +264,7 @@ async def register_organization(
         )
 
     # Check duplicate INN
-    existing_org = await session.execute(
-        select(Organization).where(Organization.inn == body.inn)
-    )
+    existing_org = await session.execute(select(Organization).where(Organization.inn == body.inn))
     if existing_org.scalar_one_or_none() is not None:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -283,15 +277,13 @@ async def register_organization(
     try:
         is_valid, registry_name = await verify_inn_external(session, body.inn)
         verification_status = (
-            OrgVerificationStatus.verified if is_valid
-            else OrgVerificationStatus.failed
+            OrgVerificationStatus.verified if is_valid else OrgVerificationStatus.failed
         )
     except RegistryUnavailable:
         # External API is down — do NOT fail the whole registration.
         # Mark for manual review instead.
         logger.warning(
-            "External INN verification failed for INN=%s; "
-            "marking organization for manual review.",
+            "External INN verification failed for INN=%s; marking organization for manual review.",
             body.inn,
         )
         verification_status = OrgVerificationStatus.manual_review
@@ -370,9 +362,7 @@ async def login(
     form: OAuth2PasswordRequestForm = Depends(),
     session: AsyncSession = Depends(get_session),
 ):
-    result = await session.execute(
-        select(User).where(User.email == form.username)
-    )
+    result = await session.execute(select(User).where(User.email == form.username))
     user = result.scalar_one_or_none()
 
     if user is None or not verify_password(form.password, user.password_hash):

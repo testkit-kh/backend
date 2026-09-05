@@ -1,4 +1,5 @@
 """Quick verification script."""
+
 import pathlib
 import sys
 
@@ -26,9 +27,7 @@ req = HypothesisCreateRequest(
 )
 print(f"✓ GeoJSON Point: lat={req.lat}, lon={req.lon}")
 
-req2 = HypothesisCreateRequest(
-    lat=55.75, lon=37.62, description="Legacy"
-)
+req2 = HypothesisCreateRequest(lat=55.75, lon=37.62, description="Legacy")
 print("✓ Legacy lat/lon input")
 
 try:

@@ -74,6 +74,7 @@ def variant_for(user_id: uuid.UUID) -> str:
 # Правила
 # ---------------------------------------------------------------------------
 
+
 @dataclass(frozen=True)
 class Reminder:
     """Одно готовое к отправке напоминание."""
@@ -107,12 +108,16 @@ async def collect_due(session: AsyncSession, now: datetime | None = None) -> lis
     due: list[Reminder] = []
 
     rows = (
-        await session.execute(
-            select(Volunteer, User)
-            .join(User, User.id == Volunteer.user_id)
-            .where(Volunteer.certificate_status != CertificateStatus.approved)
+        (
+            await session.execute(
+                select(Volunteer, User)
+                .join(User, User.id == Volunteer.user_id)
+                .where(Volunteer.certificate_status != CertificateStatus.approved)
+            )
         )
-    ).unique().all()
+        .unique()
+        .all()
+    )
 
     for volunteer, user in rows:
         due.extend(_course_reminders(volunteer, user, now))
@@ -121,9 +126,7 @@ async def collect_due(session: AsyncSession, now: datetime | None = None) -> lis
     return due
 
 
-def _course_reminders(
-    volunteer: Volunteer, user: User, now: datetime
-) -> list[Reminder]:
+def _course_reminders(volunteer: Volunteer, user: User, now: datetime) -> list[Reminder]:
     # На курс ещё не уходили — напоминать про «допройди» нечего. Такой человек
     # застрял раньше, и это другая проблема (и другое письмо).
     if volunteer.course_redirect_at is None:
@@ -144,7 +147,7 @@ def _course_reminders(
                 stage="day1",
                 title="Как продвигается обучение?",
                 body="Курс «Школы Защитников Природы» занимает 16 часов и его можно "
-                     "проходить частями. Карта откроется сразу после проверки сертификата.",
+                "проходить частями. Карта откроется сразу после проверки сертификата.",
                 action_url="/api/v1/course/redirect",
                 variant=variant,
             )
@@ -161,14 +164,12 @@ def _course_reminders(
                     kind=NotificationKind.course_not_finished,
                     stage=f"day{day}",
                     title=(
-                        "Сертификат нужно отправить заново"
-                        if rejected
-                        else "Остался шаг до карты"
+                        "Сертификат нужно отправить заново" if rejected else "Остался шаг до карты"
                     ),
                     body=(
                         volunteer.certificate_reject_reason
                         or "Загрузите сертификат — и вы сможете отмечать загрязнения "
-                           "на карте своей территории."
+                        "на карте своей территории."
                     ),
                     action_url="/course",
                     variant=variant,
@@ -178,9 +179,7 @@ def _course_reminders(
     return reminders
 
 
-def _consent_reminders(
-    volunteer: Volunteer, user: User, now: datetime
-) -> list[Reminder]:
+def _consent_reminders(volunteer: Volunteer, user: User, now: datetime) -> list[Reminder]:
     if volunteer.consent_status != ConsentStatus.awaiting:
         return []
     if (now - user.created_at).days < CONSENT_DAYS:
@@ -193,7 +192,7 @@ def _consent_reminders(
             stage="day2",
             title="Нужно согласие законного представителя",
             body="Участникам до 18 лет для выхода на карту и участия в выездах нужно "
-                 "согласие родителя или опекуна. Курс при этом доступен уже сейчас.",
+            "согласие родителя или опекуна. Курс при этом доступен уже сейчас.",
             action_url="/consent",
         )
     ]
@@ -202,6 +201,7 @@ def _consent_reminders(
 # ---------------------------------------------------------------------------
 # Отправка
 # ---------------------------------------------------------------------------
+
 
 async def dispatch(session: AsyncSession, now: datetime | None = None) -> int:
     """Разослать всё, что назрело. Возвращает число фактически отправленных."""

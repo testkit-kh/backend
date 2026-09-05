@@ -9,6 +9,7 @@ Tables
 - staff          — 1-to-1 extension for role='staff', FK → organizations
 - hypotheses     — volunteer-submitted ecological observations
 - events         — field events spawned from approved hypotheses
+- event_participants — записи волонтёров на мероприятия (+ отметка явки)
 """
 
 from __future__ import annotations
@@ -26,6 +27,7 @@ from sqlalchemy import (
     Float,
     ForeignKey,
     Index,
+    Integer,
     String,
     Text,
     UniqueConstraint,
@@ -48,6 +50,7 @@ from app.database import Base
 # Enums
 # ---------------------------------------------------------------------------
 
+
 class UserRole(str, enum.Enum):
     volunteer = "volunteer"
     staff = "staff"
@@ -59,6 +62,7 @@ class UserRole(str, enum.Enum):
 
 class OrgVerificationStatus(str, enum.Enum):
     """Result of external INN verification."""
+
     pending = "pending"
     verified = "verified"
     failed = "failed"
@@ -112,14 +116,21 @@ class NotificationKind(str, enum.Enum):
 
 class HypothesisStatus(str, enum.Enum):
     """Lifecycle of a volunteer-submitted hypothesis."""
+
     pending = "pending"
     approved = "approved"
     rejected = "rejected"
     drone_requested = "drone_requested"
+    #: Мусор вывезен — терминальное состояние, ставится не вручную, а
+    #: закрытием мероприятия. Отдельный статус, а не удаление точки: карта
+    #: убранных мест — это и есть результат проекта, и по ним считается
+    #: KPI «сколько точек доведено до уборки».
+    cleaned = "cleaned"
 
 
 class EventStatus(str, enum.Enum):
     """Lifecycle of a field event."""
+
     planned = "planned"
     in_progress = "in_progress"
     completed = "completed"
@@ -130,15 +141,12 @@ class EventStatus(str, enum.Enum):
 # Users
 # ---------------------------------------------------------------------------
 
+
 class User(Base):
     __tablename__ = "users"
 
-    id: Mapped[uuid.UUID] = mapped_column(
-        Uuid, primary_key=True, default=uuid.uuid4
-    )
-    email: Mapped[str] = mapped_column(
-        String(320), unique=True, nullable=False, index=True
-    )
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    email: Mapped[str] = mapped_column(String(320), unique=True, nullable=False, index=True)
     full_name: Mapped[str] = mapped_column(String(256), nullable=False)
     password_hash: Mapped[str] = mapped_column(Text, nullable=False)
     role: Mapped[UserRole] = mapped_column(
@@ -160,21 +168,18 @@ class User(Base):
         lazy="joined",
         foreign_keys="Volunteer.user_id",
     )
-    staff: Mapped[Staff | None] = relationship(
-        back_populates="user", uselist=False, lazy="joined"
-    )
+    staff: Mapped[Staff | None] = relationship(back_populates="user", uselist=False, lazy="joined")
 
 
 # ---------------------------------------------------------------------------
 # Volunteers
 # ---------------------------------------------------------------------------
 
+
 class Volunteer(Base):
     __tablename__ = "volunteers"
 
-    id: Mapped[uuid.UUID] = mapped_column(
-        Uuid, primary_key=True, default=uuid.uuid4
-    )
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
     user_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("users.id", ondelete="CASCADE"), unique=True, nullable=False
     )
@@ -196,9 +201,7 @@ class Volunteer(Base):
     # ---- Обучение: «Школа Защитников Природы» (iSpring) --------------------
     # Названия нейтральные (course_/certificate_), а не ispring_/stepik_:
     # площадка курса уже менялась, историю данных это ломать не должно.
-    certificate_url: Mapped[str | None] = mapped_column(
-        String(2048), nullable=True, default=None
-    )
+    certificate_url: Mapped[str | None] = mapped_column(String(2048), nullable=True, default=None)
     certificate_status: Mapped[CertificateStatus] = mapped_column(
         SAEnum(CertificateStatus, name="certificate_status"),
         default=CertificateStatus.none,
@@ -225,21 +228,18 @@ class Volunteer(Base):
         DateTime(timezone=True), nullable=True
     )
 
-    user: Mapped[User] = relationship(
-        back_populates="volunteer", foreign_keys=[user_id]
-    )
+    user: Mapped[User] = relationship(back_populates="volunteer", foreign_keys=[user_id])
 
 
 # ---------------------------------------------------------------------------
 # Organizations (ООПТ)
 # ---------------------------------------------------------------------------
 
+
 class Organization(Base):
     __tablename__ = "organizations"
 
-    id: Mapped[uuid.UUID] = mapped_column(
-        Uuid, primary_key=True, default=uuid.uuid4
-    )
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
     name: Mapped[str] = mapped_column(String(512), nullable=False)
     inn: Mapped[str] = mapped_column(String(12), unique=True, nullable=False, index=True)
     cadastral_number: Mapped[str | None] = mapped_column(String(64), nullable=True)
@@ -278,12 +278,11 @@ class Organization(Base):
 # Staff (сотрудники ООПТ)
 # ---------------------------------------------------------------------------
 
+
 class Staff(Base):
     __tablename__ = "staff"
 
-    id: Mapped[uuid.UUID] = mapped_column(
-        Uuid, primary_key=True, default=uuid.uuid4
-    )
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
     user_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("users.id", ondelete="CASCADE"), unique=True, nullable=False
     )
@@ -294,21 +293,18 @@ class Staff(Base):
     user: Mapped[User] = relationship(back_populates="staff")
     #: joined, не select: /auth/me читает org синхронно из уже открытой
     #: async-сессии — implicit lazy load там роняет запрос в MissingGreenlet.
-    organization: Mapped[Organization] = relationship(
-        back_populates="staff_members", lazy="joined"
-    )
+    organization: Mapped[Organization] = relationship(back_populates="staff_members", lazy="joined")
 
 
 # ---------------------------------------------------------------------------
 # Hypotheses (экологические наблюдения волонтёров)
 # ---------------------------------------------------------------------------
 
+
 class Hypothesis(Base):
     __tablename__ = "hypotheses"
 
-    id: Mapped[uuid.UUID] = mapped_column(
-        Uuid, primary_key=True, default=uuid.uuid4
-    )
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
     author_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("users.id", ondelete="CASCADE"),
         nullable=False,
@@ -325,19 +321,23 @@ class Hypothesis(Base):
     # шлёт его вместе с точкой. Пара (author, client_id)
     # уникальна — повторный POST вернёт 200 вместо дубля.
     client_id: Mapped[uuid.UUID | None] = mapped_column(
-        Uuid, nullable=True,
+        Uuid,
+        nullable=True,
     )
     #: Время создания на устройстве. Если старше серверного
     #: более чем на 5 мин — точка пришла из офлайн-очереди.
     created_at_client: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True,
+        DateTime(timezone=True),
+        nullable=True,
     )
 
     lat: Mapped[float] = mapped_column(
-        Float, nullable=False,
+        Float,
+        nullable=False,
     )
     lon: Mapped[float] = mapped_column(
-        Float, nullable=False,
+        Float,
+        nullable=False,
     )
 
     # Точка наблюдения — PostGIS POINT из (lon, lat).
@@ -362,10 +362,12 @@ class Hypothesis(Base):
     )
 
     description: Mapped[str] = mapped_column(
-        Text, nullable=False,
+        Text,
+        nullable=False,
     )
     photo_url: Mapped[str | None] = mapped_column(
-        String(2048), nullable=True,
+        String(2048),
+        nullable=True,
     )
 
     # ---- Характеристики мусора ----
@@ -373,7 +375,8 @@ class Hypothesis(Base):
     # фракцию и объём — без них нельзя спрогнозировать затраты
     # на уборку и сравнить замеры на одной площадке.
     trash_categories: Mapped[list[str] | None] = mapped_column(
-        ARRAY(String(32)), nullable=True,
+        ARRAY(String(32)),
+        nullable=True,
     )
     dominant_category: Mapped[TrashCategory | None] = mapped_column(
         SAEnum(TrashCategory, name="trash_category"),
@@ -391,32 +394,39 @@ class Hypothesis(Base):
     # Человек указывает либо объём, либо площадь пятна —
     # что проще оценить на месте.
     estimated_area_m2: Mapped[float | None] = mapped_column(
-        Float, nullable=True,
+        Float,
+        nullable=True,
     )
     estimated_volume_m3: Mapped[float | None] = mapped_column(
-        Float, nullable=True,
+        Float,
+        nullable=True,
     )
 
     # Производные величины. Хранятся, а не считаются на лету:
     # коэффициенты со временем поменяются, а смета, показанная
     # ООПТ, должна остаться той, по которой принимали решение.
     computed_volume_m3: Mapped[float | None] = mapped_column(
-        Float, nullable=True,
+        Float,
+        nullable=True,
     )
     computed_mass_kg: Mapped[float | None] = mapped_column(
-        Float, nullable=True,
+        Float,
+        nullable=True,
     )
     cleanup_cost_rub: Mapped[float | None] = mapped_column(
-        Float, nullable=True,
+        Float,
+        nullable=True,
     )
     cost_assumptions: Mapped[dict | None] = mapped_column(
-        JSONB, nullable=True,
+        JSONB,
+        nullable=True,
     )
 
     # Замер на площадке многолетних наблюдений.
     monitoring_site_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey(
-            "monitoring_sites.id", ondelete="SET NULL",
+            "monitoring_sites.id",
+            ondelete="SET NULL",
         ),
         nullable=True,
         index=True,
@@ -431,6 +441,13 @@ class Hypothesis(Base):
         default=HypothesisStatus.pending,
         nullable=False,
     )
+    #: Причина отказа. Нужна в ленте «Мои точки»: без неё отказ выглядит
+    #: как молчаливое «нет», и волонтёр не понимает, что исправить в
+    #: следующей заявке — а именно на этом шаге люди и отваливаются.
+    reject_reason: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=lambda: datetime.now(UTC),
@@ -444,10 +461,12 @@ class Hypothesis(Base):
     )
 
     author: Mapped[User] = relationship(
-        foreign_keys=[author_id], lazy="joined",
+        foreign_keys=[author_id],
+        lazy="joined",
     )
     organization: Mapped[Organization | None] = relationship(
-        back_populates="hypotheses", lazy="joined",
+        back_populates="hypotheses",
+        lazy="joined",
     )
     event: Mapped[Event | None] = relationship(
         back_populates="hypothesis",
@@ -476,12 +495,11 @@ class Hypothesis(Base):
 # Events (мероприятия, создаются при approved-гипотезе)
 # ---------------------------------------------------------------------------
 
+
 class Event(Base):
     __tablename__ = "events"
 
-    id: Mapped[uuid.UUID] = mapped_column(
-        Uuid, primary_key=True, default=uuid.uuid4
-    )
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
     hypothesis_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("hypotheses.id", ondelete="CASCADE"),
         unique=True,
@@ -491,26 +509,133 @@ class Event(Base):
         ForeignKey("organizations.id", ondelete="CASCADE"),
         nullable=False,
     )
-    title: Mapped[str] = mapped_column(
-        String(512), nullable=False
+    title: Mapped[str] = mapped_column(String(512), nullable=False)
+    #: Что делаем и что взять с собой. Заполняет ООПТ при планировании —
+    #: при автосоздании из гипотезы известен только заголовок.
+    description: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+    )
+    #: Место сбора человеческим текстом («парковка у 3-го км»), а не
+    #: координатой: точка уборки уже есть в гипотезе, а собираются люди
+    #: там, куда доезжает транспорт.
+    place: Mapped[str | None] = mapped_column(
+        String(512),
+        nullable=True,
+    )
+    #: Дата и время выезда. Nullable: мероприятие создаётся сразу при
+    #: одобрении точки, а дату ООПТ ставит позже, когда найдёт транспорт.
+    scheduled_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
     )
     status: Mapped[EventStatus] = mapped_column(
         SAEnum(EventStatus, name="event_status", create_constraint=True),
         default=EventStatus.planned,
         nullable=False,
     )
+
+    # ---- Итоги уборки ----
+    # Заполняются один раз при закрытии мероприятия. Хранятся на
+    # мероприятии, а не на гипотезе: гипотеза — это оценка «на глаз»
+    # до выезда, а это факт после него. Расхождение между ними —
+    # то, что делает следующие оценки точнее.
+    completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    #: Сколько человек реально пришло. Отличается от числа записавшихся —
+    #: разрыв между записью и явкой это отдельный KPI.
+    actual_participants: Mapped[int | None] = mapped_column(
+        Integer,
+        nullable=True,
+    )
+    waste_volume_m3: Mapped[float | None] = mapped_column(
+        Float,
+        nullable=True,
+    )
+    waste_mass_kg: Mapped[float | None] = mapped_column(
+        Float,
+        nullable=True,
+    )
+    result_notes: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+    )
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=lambda: datetime.now(UTC),
         nullable=False,
     )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(UTC),
+        onupdate=lambda: datetime.now(UTC),
+        nullable=False,
+    )
 
     hypothesis: Mapped[Hypothesis] = relationship(back_populates="event")
+    participants: Mapped[list[EventParticipant]] = relationship(
+        back_populates="event",
+        lazy="selectin",
+        cascade="all, delete-orphan",
+    )
+
+
+class EventParticipant(Base):
+    """Запись волонтёра на мероприятие.
+
+    Ассоциативная таблица, а не массив id на мероприятии: у участия есть
+    свои атрибуты — когда записался и пришёл ли в итоге. Именно из пары
+    (joined_at, attended) считается явка, а она в проекте важнее числа
+    записавшихся.
+    """
+
+    __tablename__ = "event_participants"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    event_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("events.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    joined_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(UTC),
+        nullable=False,
+    )
+    #: Отмечается при закрытии мероприятия. False по умолчанию — записался
+    #: не значит пришёл, и достоверно это знает только сотрудник на месте.
+    attended: Mapped[bool] = mapped_column(
+        Boolean,
+        default=False,
+        nullable=False,
+    )
+
+    event: Mapped[Event] = relationship(back_populates="participants")
+    user: Mapped[User] = relationship(lazy="joined")
+
+    __table_args__ = (
+        # Идемпотентность записи на уровне БД: повторный POST /join не
+        # создаст второго участника даже при гонке двух запросов.
+        UniqueConstraint(
+            "event_id",
+            "user_id",
+            name="uq_event_participants_event_user",
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------
 # Analytics events — the single source for every KPI
 # ---------------------------------------------------------------------------
+
 
 class AnalyticsEvent(Base):
     """Append-only event log.
@@ -531,9 +656,7 @@ class AnalyticsEvent(Base):
         ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
     event_type: Mapped[str] = mapped_column(String(64), nullable=False)
-    payload: Mapped[dict] = mapped_column(
-        JSONB, nullable=False, default=dict, server_default="{}"
-    )
+    payload: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict, server_default="{}")
     # Geography, not Geometry: KPI queries measure real distances in metres
     # (e.g. "points within the 20 km coastal buffer").
     geo = mapped_column(
@@ -557,6 +680,7 @@ class AnalyticsEvent(Base):
 # ---------------------------------------------------------------------------
 # Monitoring sites — площадки многолетних наблюдений
 # ---------------------------------------------------------------------------
+
 
 class MonitoringSite(Base):
     """Постоянная площадка, на которой замеры повторяются год за годом.
@@ -587,9 +711,7 @@ class MonitoringSite(Base):
     # Длина берегового отрезка, м — стандартная нормировка для пляжного учёта.
     shoreline_length_m: Mapped[float | None] = mapped_column(Float, nullable=True)
 
-    established_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False
-    )
+    established_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     protocol: Mapped[str | None] = mapped_column(Text, nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
@@ -603,9 +725,7 @@ class MonitoringSite(Base):
         back_populates="site", order_by="SiteSurvey.surveyed_at"
     )
 
-    __table_args__ = (
-        Index("idx_monitoring_sites_geom", "geom", postgresql_using="gist"),
-    )
+    __table_args__ = (Index("idx_monitoring_sites_geom", "geom", postgresql_using="gist"),)
 
 
 class SiteSurvey(Base):
@@ -626,13 +746,9 @@ class SiteSurvey(Base):
     author_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
-    surveyed_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False
-    )
+    surveyed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
-    trash_categories: Mapped[list[str] | None] = mapped_column(
-        ARRAY(String(32)), nullable=True
-    )
+    trash_categories: Mapped[list[str] | None] = mapped_column(ARRAY(String(32)), nullable=True)
     dominant_category: Mapped[TrashCategory | None] = mapped_column(
         SAEnum(TrashCategory, name="trash_category"), nullable=True
     )
@@ -650,9 +766,7 @@ class SiteSurvey(Base):
     # Убрали ли мусор после замера. Если да, следующий замер меряет накопление
     # с нуля; если нет — накопленное с момента закладки площадки.
     was_cleaned: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
-    photo_urls: Mapped[list[str] | None] = mapped_column(
-        ARRAY(String(2048)), nullable=True
-    )
+    photo_urls: Mapped[list[str] | None] = mapped_column(ARRAY(String(2048)), nullable=True)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
@@ -662,14 +776,13 @@ class SiteSurvey(Base):
 
     site: Mapped[MonitoringSite] = relationship(back_populates="surveys")
 
-    __table_args__ = (
-        Index("ix_site_surveys_site_surveyed", "site_id", "surveyed_at"),
-    )
+    __table_args__ = (Index("ix_site_surveys_site_surveyed", "site_id", "surveyed_at"),)
 
 
 # ---------------------------------------------------------------------------
 # Notifications — «допройди курс» и всё остальное
 # ---------------------------------------------------------------------------
+
 
 class Notification(Base):
     """Уведомление пользователю.
@@ -694,20 +807,14 @@ class Notification(Base):
     body: Mapped[str | None] = mapped_column(Text, nullable=True)
     #: Куда ведёт уведомление внутри приложения.
     action_url: Mapped[str | None] = mapped_column(String(2048), nullable=True)
-    payload: Mapped[dict] = mapped_column(
-        JSONB, nullable=False, default=dict, server_default="{}"
-    )
+    payload: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict, server_default="{}")
 
     #: Ключ дедупликации напоминаний: user + вид + этап. У обычных
     #: уведомлений пуст — они не повторяются по расписанию.
     dedupe_key: Mapped[str | None] = mapped_column(String(128), nullable=True)
 
-    read_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
-    clicked_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    read_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    clicked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
     )
@@ -734,6 +841,7 @@ class Notification(Base):
 # Company registry cache — сведения из ЕГРЮЛ по ИНН
 # ---------------------------------------------------------------------------
 
+
 class CompanyRegistryCache(Base):
     """Кэш ответов внешнего реестра.
 
@@ -747,9 +855,7 @@ class CompanyRegistryCache(Base):
     __tablename__ = "company_registry_cache"
 
     inn: Mapped[str] = mapped_column(String(12), primary_key=True)
-    payload: Mapped[dict] = mapped_column(
-        JSONB, nullable=False, default=dict, server_default="{}"
-    )
+    payload: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict, server_default="{}")
     source: Mapped[str] = mapped_column(String(64), nullable=False)
     fetched_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
@@ -759,6 +865,7 @@ class CompanyRegistryCache(Base):
 # ---------------------------------------------------------------------------
 # Parental consent — участие 14–17 лет
 # ---------------------------------------------------------------------------
+
 
 class ParentalConsent(Base):
     """Согласие законного представителя.
@@ -795,23 +902,20 @@ class ParentalConsent(Base):
     submitted_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
     )
-    reviewed_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     reviewer_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
 
     volunteer: Mapped[Volunteer] = relationship(lazy="joined")
 
-    __table_args__ = (
-        Index("ix_parental_consents_status_submitted", "status", "submitted_at"),
-    )
+    __table_args__ = (Index("ix_parental_consents_status_submitted", "status", "submitted_at"),)
 
 
 # ---------------------------------------------------------------------------
 # Cadastral parcels — участки ООПТ
 # ---------------------------------------------------------------------------
+
 
 class CadastralParcel(Base):
     """Кадастровый участок организации.
@@ -830,9 +934,7 @@ class CadastralParcel(Base):
     organization_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False, index=True
     )
-    cadastral_number: Mapped[str] = mapped_column(
-        String(64), nullable=False, unique=True
-    )
+    cadastral_number: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
 
     # MultiPolygon, а не Polygon: участок бывает многоконтурным.
     geom = mapped_column(
@@ -850,9 +952,7 @@ class CadastralParcel(Base):
     #: участков придётся вводить руками, и это должно быть видно в данных.
     source: Mapped[str | None] = mapped_column(String(32), nullable=True)
     resolve_error: Mapped[str | None] = mapped_column(Text, nullable=True)
-    resolved_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
     )

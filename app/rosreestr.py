@@ -107,9 +107,7 @@ async def resolve_parcel(cadastral_number: str) -> ParcelGeometry:
         )
 
     if not is_valid_cadastral_number(cadastral_number):
-        raise ParcelResolveFailed(
-            f"Неверный формат кадастрового номера: {cadastral_number}"
-        )
+        raise ParcelResolveFailed(f"Неверный формат кадастрового номера: {cadastral_number}")
 
     try:
         # Библиотека синхронная и ходит в сеть — в event loop её пускать
@@ -121,9 +119,7 @@ async def resolve_parcel(cadastral_number: str) -> ParcelGeometry:
     except ParcelNotFound:
         raise
     except TimeoutError as error:
-        raise ParcelResolveFailed(
-            f"ФГИС ЕГРН не ответил за {RESOLVE_TIMEOUT_SECONDS} с"
-        ) from error
+        raise ParcelResolveFailed(f"ФГИС ЕГРН не ответил за {RESOLVE_TIMEOUT_SECONDS} с") from error
     except Exception as error:
         logger.warning("Не удалось получить участок %s: %s", cadastral_number, error)
         raise ParcelResolveFailed(str(error)) from error

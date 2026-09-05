@@ -40,11 +40,7 @@ def required_consent_status(birth_date: date | None) -> ConsentStatus:
     """
     if birth_date is None:
         return ConsentStatus.not_required
-    return (
-        ConsentStatus.awaiting
-        if age_at(birth_date) < ADULT_AGE
-        else ConsentStatus.not_required
-    )
+    return ConsentStatus.awaiting if age_at(birth_date) < ADULT_AGE else ConsentStatus.not_required
 
 
 def has_field_access(volunteer: Volunteer) -> bool:

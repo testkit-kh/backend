@@ -149,9 +149,7 @@ class DadataProvider:
             async with httpx.AsyncClient(
                 timeout=httpx.Timeout(settings.REGISTRY_TIMEOUT_SECONDS)
             ) as client:
-                response = await client.post(
-                    self.URL, json={"query": inn}, headers=headers
-                )
+                response = await client.post(self.URL, json={"query": inn}, headers=headers)
                 response.raise_for_status()
                 suggestions = response.json().get("suggestions") or []
         except Exception as error:

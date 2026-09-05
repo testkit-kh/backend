@@ -34,9 +34,7 @@ class Settings(BaseSettings):
     ]
 
     # --- Course (iSpring) ---------------------------------------------------
-    COURSE_SIGNUP_URL: str = (
-        "https://zaprirodu.ispring.ru/signup/LvEGzxy0_owor3LFnvf7L2qVk5I"
-    )
+    COURSE_SIGNUP_URL: str = "https://zaprirodu.ispring.ru/signup/LvEGzxy0_owor3LFnvf7L2qVk5I"
 
     # --- Object storage (MinIO / S3) ---------------------------------------
     S3_ENDPOINT_URL: str = "http://minio:9000"

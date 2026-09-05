@@ -81,9 +81,7 @@ async def lookup_company(
 
 
 async def _read_cache(session: AsyncSession, inn: str) -> CompanyInfo | None:
-    row = await session.scalar(
-        select(CompanyRegistryCache).where(CompanyRegistryCache.inn == inn)
-    )
+    row = await session.scalar(select(CompanyRegistryCache).where(CompanyRegistryCache.inn == inn))
     if row is None:
         return None
 
@@ -102,9 +100,7 @@ async def _read_cache(session: AsyncSession, inn: str) -> CompanyInfo | None:
 async def _write_cache(
     session: AsyncSession, inn: str, info: CompanyInfo | None, source: str
 ) -> None:
-    row = await session.scalar(
-        select(CompanyRegistryCache).where(CompanyRegistryCache.inn == inn)
-    )
+    row = await session.scalar(select(CompanyRegistryCache).where(CompanyRegistryCache.inn == inn))
     payload = asdict(info) if info is not None else {}
 
     if row is None:

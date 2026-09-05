@@ -20,6 +20,7 @@ from app.config import settings
 from app.consent import router as consent_router
 from app.course import router as course_router
 from app.database import engine
+from app.events import router as events_router
 from app.hypotheses import router as hypotheses_router
 from app.monitoring import router as monitoring_router
 from app.notifications import router as notifications_router
@@ -59,6 +60,7 @@ app.add_middleware(
 
 app.include_router(auth_router)
 app.include_router(hypotheses_router)
+app.include_router(events_router)
 app.include_router(monitoring_router)
 app.include_router(course_router)
 app.include_router(notifications_router)

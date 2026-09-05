@@ -44,6 +44,7 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1", tags=["consent"])
 
+
 def _require_volunteer(user: User) -> Volunteer:
     if user.role != UserRole.volunteer or user.volunteer is None:
         raise HTTPException(
@@ -64,6 +65,7 @@ def _require_coordinator(user: User) -> None:
 # ═══════════════════════════════════════════════════════════════════════════
 # Подача согласия
 # ═══════════════════════════════════════════════════════════════════════════
+
 
 @router.post(
     "/volunteers/me/parental-consent",
@@ -121,9 +123,7 @@ async def pending_consents(
         .where(ParentalConsent.status == ConsentStatus.awaiting)
         .order_by(ParentalConsent.submitted_at)
     )
-    return [
-        ParentalConsentOut.model_validate(c) for c in result.unique().scalars().all()
-    ]
+    return [ParentalConsentOut.model_validate(c) for c in result.unique().scalars().all()]
 
 
 @router.post(
@@ -141,9 +141,7 @@ async def review_consent(
 
     consent = await session.get(ParentalConsent, consent_id)
     if consent is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Consent not found."
-        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Consent not found.")
     if consent.status != ConsentStatus.awaiting:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
